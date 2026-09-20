@@ -266,6 +266,39 @@ systemctl disable --now gdm
 systemctl set-default multi-user.target
 ```
 
+Add `don`/`doff`/`dstat` helpers so the desktop can be toggled on demand
+(written to `~/.bash_aliases`, which Ubuntu's default `~/.bashrc` sources):
+
+```bash
+cat >> ~/.bash_aliases <<'EOF'
+# Desktop session toggles
+unalias don doff 2>/dev/null
+BL=/sys/class/backlight/gmux_backlight
+BL_STATE=$HOME/.doff_brightness
+
+don() {
+    sudo systemctl start gdm
+    if [ -f "$BL_STATE" ]; then
+        sudo sh -c "echo 0 > $BL/bl_power"
+        sudo sh -c "echo $(cat "$BL_STATE") > $BL/brightness"
+    fi
+}
+
+doff() {
+    cat "$BL/brightness" > "$BL_STATE" 2>/dev/null
+    sudo sh -c "echo 1 > $BL/bl_power"
+    sudo systemctl stop gdm
+}
+
+alias dstat='systemctl is-active gdm'
+EOF
+```
+
+- `don` — start GDM (switch to it with `Fn+Ctrl+Alt+F2`; Apple F-keys need `Fn`).
+- `doff` — power off the panel backlight, then stop GDM. Run from SSH — it
+  blanks the local screen.
+- `dstat` — show GDM status.
+
 ## Phase 5 — Reboot + verify
 
 Reboot now to apply the GRUB parameters, dGPU blacklist, initramfs, logind and

@@ -201,6 +201,30 @@ if [ "$HEADLESS" = "1" ]; then
   log "  4.3 disabling GDM (headless)"
   systemctl disable --now gdm 2>/dev/null || true
   systemctl set-default multi-user.target
+
+  log "  4.3 installing don/doff/dstat desktop toggles"
+  sudo -u "$ADMIN_USER" -H bash -c 'cat >> "$HOME/.bash_aliases" <<'"'"'EOF'"'"'
+# Desktop session toggles
+unalias don doff 2>/dev/null
+BL=/sys/class/backlight/gmux_backlight
+BL_STATE=$HOME/.doff_brightness
+
+don() {
+    sudo systemctl start gdm
+    if [ -f "$BL_STATE" ]; then
+        sudo sh -c "echo 0 > $BL/bl_power"
+        sudo sh -c "echo $(cat "$BL_STATE") > $BL/brightness"
+    fi
+}
+
+doff() {
+    cat "$BL/brightness" > "$BL_STATE" 2>/dev/null
+    sudo sh -c "echo 1 > $BL/bl_power"
+    sudo systemctl stop gdm
+}
+
+alias dstat='"'"'systemctl is-active gdm'"'"'
+EOF' || warn "could not write $ADMIN_USER shell aliases"
 fi
 
 # ================================================================ SUMMARY
