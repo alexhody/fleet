@@ -1,6 +1,6 @@
 ---
 name: macbookpro-ubuntu-setup
-description: Use ONLY when provisioning a freshly installed Ubuntu on an Apple MacBook Pro (MacBookPro11,x, e.g. 11,5) for headless remote agentic-coding use. Covers required GRUB kernel parameters, Apple driver checks, disabling the AMD dGPU (iGPU-only), key-only SSH, Tailscale, no-sleep/lid handling, dev toolchain, mbpfan, UFW hardening, the Wi-Fi regulatory domain, turning off unused devices (Bluetooth, FaceTime camera, SD card reader), and installing Docker but leaving it off on demand. Trigger on "fresh Ubuntu on MacBook Pro", "set up this MacBook", "SSH into the Ubuntu MacBook", "turn off Bluetooth/camera/SD reader", "enable/disable Docker on the MacBook".
+description: Use ONLY when provisioning a freshly installed Ubuntu on an Apple MacBook Pro (MacBookPro11,x, e.g. 11,5) for headless remote agentic-coding use. Covers required GRUB kernel parameters, Apple driver checks, disabling the AMD dGPU (iGPU-only), key-only SSH, Tailscale, no-sleep/lid handling, dev toolchain, mbpfan, UFW hardening, the Wi-Fi regulatory domain, turning off unused devices (Bluetooth, FaceTime camera, SD card reader) and unused services (CUPS printing, ModemManager, update-notifier/motd-news), and installing Docker but leaving it off on demand. Trigger on "fresh Ubuntu on MacBook Pro", "set up this MacBook", "SSH into the Ubuntu MacBook", "turn off Bluetooth/camera/SD reader", "disable CUPS/ModemManager", "enable/disable Docker on the MacBook".
 ---
 
 # Fresh Ubuntu on a MacBook Pro -> remote agentic-coding box
@@ -27,9 +27,10 @@ applies the GRUB parameters, dGPU blacklist, initramfs, and logind changes.
 Phase 0  Preflight        read-only: identify box, collect inputs, driver sanity
 Phase 1  Boot parameters  GRUB cmdline quirks (SSD NCQ, IOMMU)             <-- first
 Phase 2  Hardware         dGPU off, fans, Wi-Fi reg domain, power/sleep,
-                          unused devices off (Bluetooth/camera/SD reader)
+                          unused devices + services off
 Phase 3  Remote access    base pkgs, key-only SSH, Tailscale, UFW
-Phase 4  Workload         dev toolchain, Docker (off on demand), Node/uv, (headless)
+Phase 4  Workload         dev toolchain, Docker (off on demand), Node/uv,
+                          GUI-on-boot + don/doff toggles (HEADLESS=1 = no GUI)
 Phase 5  Reboot + verify  apply everything, confirm SSH from the client
 ```
 
@@ -198,9 +199,30 @@ Deliberately **not** touched: SATA ALPM (`max_performance`) and PCIe ASPM
 no physical access — not worth it. The dGPU is the dominant draw and cannot be
 parked on 11,x (see 2.1 and Gotchas).
 
+### 2.6 Disable unused services (printing, modem, update notifiers)
+
+None of these are needed on a headless coding box, and none touch SSH/Tailscale:
+
+```bash
+# Printing daemon + network printer discovery (no printers configured)
+systemctl disable --now cups.path cups.socket cups.service cups-browsed.service
+
+# Mobile-broadband manager (Wi-Fi only, no WWAN modem)
+systemctl disable --now ModemManager.service
+
+# Cosmetic update notices + MOTD news (keep unattended-upgrades for security)
+systemctl disable --now motd-news.timer update-notifier-download.timer update-notifier-motd.timer
+```
+
+Re-enable any with `systemctl enable --now <unit>`. Deliberately **kept**:
+`unattended-upgrades` + `apt-daily*.timer` (automatic security patching) and
+`snapd` (only needed if you use the desktop/Firefox snaps). `avahi-daemon` is
+left running too — it is tiny and `cups-browsed` was its only consumer.
+
 **Phase 2 verify:** iGPU drives the panel, dGPU has no driver, fans active,
 `iw reg get` shows your country, sleep targets masked, Bluetooth soft-blocked,
-`uvcvideo` not loaded, `sdb`/card reader gone (`lsblk`).
+`uvcvideo` not loaded, `sdb`/card reader gone (`lsblk`), and
+`cups`/`ModemManager`/`motd-news.timer` inactive.
 
 ## Phase 3 — Remote access
 
@@ -311,17 +333,23 @@ pro attach <TOKEN>
 pro enable esm-apps esm-infra livepatch
 ```
 
-### 4.4 Optional: go headless
+### 4.4 Desktop: GUI on boot + `don`/`doff` toggles (default)
 
-Frees ~0.5–1 GB RAM for agents. Skip if you want the desktop.
+The default is a **GUI on every reboot**: GDM starts and shows the login screen,
+while Tailscale and SSH come up on their own. The usual workflow is to SSH in over
+Tailscale and run `doff` to reclaim the GUI (backlight off, GDM + snapd stopped);
+`don` brings it back. Nothing here changes the boot target, so GDM returns on every
+reboot.
+
+snapd only backs GUI snaps (Firefox, snap-store); keep it off at boot and let
+`don`/`doff` start/stop it with the desktop:
 
 ```bash
-systemctl disable --now gdm
-systemctl set-default multi-user.target
+systemctl disable --now snapd.service snapd.socket
 ```
 
-Add `don`/`doff`/`dstat` helpers so the desktop can be toggled on demand
-(written to `~/.bash_aliases`, which Ubuntu's default `~/.bashrc` sources):
+Install the toggles for `ADMIN_USER` (written to `~/.bash_aliases`, which
+Ubuntu's default `~/.bashrc` sources):
 
 ```bash
 cat >> ~/.bash_aliases <<'EOF'
@@ -331,6 +359,7 @@ BL=/sys/class/backlight/gmux_backlight
 BL_STATE=$HOME/.doff_brightness
 
 don() {
+    sudo systemctl start snapd.socket snapd.service
     sudo systemctl start gdm
     if [ -f "$BL_STATE" ]; then
         sudo sh -c "echo 0 > $BL/bl_power"
@@ -342,21 +371,38 @@ doff() {
     cat "$BL/brightness" > "$BL_STATE" 2>/dev/null
     sudo sh -c "echo 1 > $BL/bl_power"
     sudo systemctl stop gdm
+    sudo systemctl stop snapd.service snapd.socket
 }
 
 alias dstat='systemctl is-active gdm'
 EOF
 ```
 
-- `don` — start GDM (switch to it with `Fn+Ctrl+Alt+F2`; Apple F-keys need `Fn`).
-- `doff` — power off the panel backlight, then stop GDM. Run from SSH — it
-  blanks the local screen.
+- `don` — start snapd (for GUI snaps like Firefox) + GDM (switch to it with
+  `Fn+Ctrl+Alt+F2`; Apple F-keys need `Fn`).
+- `doff` — power off the panel backlight, then stop GDM and snapd. Run from SSH —
+  it blanks the local screen.
 - `dstat` — show GDM status.
+- snapd stays disabled at boot (~48 MB saved); `don`/`doff` toggle it per session.
+
+#### Optional: boot with no GUI (`HEADLESS=1`)
+
+If you'd rather the box boot to a text console (no GDM), add:
+
+```bash
+systemctl set-default multi-user.target
+# `systemctl disable gdm` is a NO-OP: gdm.service is a static unit with no
+# [Install]. Remove the display-manager designation instead:
+rm -f /etc/systemd/system/display-manager.service
+systemctl stop gdm
+```
+
+`don`/`doff` still work in this mode (they start/stop GDM manually).
 
 ## Phase 5 — Reboot + verify
 
 Reboot now to apply the GRUB parameters, dGPU blacklist, initramfs, logind and
-headless changes.
+desktop/toggle changes.
 
 ```bash
 reboot
@@ -370,6 +416,8 @@ lspci -k | grep -A2 -E 'VGA|Network'
 lsmod | grep -E 'amdgpu|radeon' || echo "dGPU drivers not loaded (good)"
 cat /sys/class/drm/card1-eDP-1/status        # connected
 systemctl is-active ssh tailscaled docker mbpfan
+systemctl is-active gdm                         # active = GUI on boot (default)
+systemctl is-active snapd                       # inactive = snapd off at boot
 ufw status | head -1
 tailscale status | head -3
 ```
@@ -394,6 +442,20 @@ it survives lid-close. That is the working state.
 - **Unused devices are off**: Bluetooth soft-blocked, `uvcvideo` blacklisted,
   SD reader deauthorized (see 2.5 for the one-line reverts). The card reader's USB
   path (`2-4`) is stable on this model but can change if USB topology changes.
+- **Unused services are off**: CUPS (`cups.path/socket/service`), `cups-browsed`,
+  `ModemManager`, and the `motd-news`/`update-notifier` timers (see 2.6). Re-enable
+  with `systemctl enable --now <unit>`. `unattended-upgrades` is kept for security.
+- **snapd is off at boot** and toggled by `don`/`doff` (it only backs GUI snaps
+  like Firefox/snap-store; ~48 MB). Don't expect `snap` commands or auto
+  snap updates while the desktop is off.
+- **avahi-daemon is not needed** here (mDNS is unrelated to the NIC, so a future
+  USB Ethernet adapter does not require it). It's left running only because it is
+  tiny; its sole consumer, `cups-browsed`, is disabled.
+- **Default boots to the GUI.** GDM is enabled via `display-manager.service` (→
+  `gdm3`) and `graphical.target`, so it loads on every reboot; `doff` only stops it
+  for the current boot. `systemctl disable gdm` is a **no-op** (static unit) — to
+  boot without a GUI use `set-default multi-user.target` + remove
+  `/etc/systemd/system/display-manager.service` (see 4.4).
 - **Battery health** may be degraded (this unit: 56%); fine on AC, poor unplugged.
 
 ## Bundled script
@@ -403,5 +465,7 @@ and prints the manual follow-ups. Set the variables at the top (or export them),
 then run as root. See the header of `scripts/setup.sh` for options.
 
 Relevant options: `SKIP_DEVICES=1` (keep Bluetooth/camera/SD reader on),
-`DOCKER_ON=1` (leave Docker enabled at boot instead of on-demand), plus
-`SKIP_DGPU`, `SKIP_GRUB`, `HEADLESS`.
+`SKIP_SERVICES=1` (keep CUPS/ModemManager/update-notifier on),
+`DOCKER_ON=1` (leave Docker enabled at boot instead of on-demand),
+`HEADLESS=1` (boot to a text console instead of the default GUI-on-boot), plus
+`SKIP_DGPU`, `SKIP_GRUB`.

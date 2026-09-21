@@ -4,9 +4,11 @@
 # Phases (boot params, then hardware, then remote access, then workload):
 #   1. Boot params : GRUB quirks (SSD NCQ, IOMMU) - must precede first reboot
 #   2. Hardware    : apt helpers, dGPU off, fans, Wi-Fi reg domain, no-sleep,
-#                    unused devices off (Bluetooth, camera, SD reader)
+#                    unused devices off (Bluetooth, camera, SD reader) and
+#                    unused services off (CUPS, ModemManager, update notifiers)
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
-#   4. Workload    : dev toolchain, Docker (off on demand), Node/uv, (headless)
+#   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
+#                    GUI-on-boot + don/doff toggles (HEADLESS=1 = no GUI)
 #
 # Usage:
 #   sudo ADMIN_USER=saturn \
@@ -23,8 +25,9 @@
 #   SKIP_DGPU=1   do not blacklist the AMD dGPU
 #   SKIP_GRUB=1   do not touch GRUB cmdline
 #   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader
+#   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/update-notifier
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
-#   HEADLESS=1    disable GDM (saves ~0.5-1 GB RAM)
+#   HEADLESS=1    boot to a text console (default: GUI on boot + don/doff toggles)
 #
 set -euo pipefail
 
@@ -47,6 +50,7 @@ COUNTRY="${COUNTRY:-}"
 SKIP_DGPU="${SKIP_DGPU:-0}"
 SKIP_GRUB="${SKIP_GRUB:-0}"
 SKIP_DEVICES="${SKIP_DEVICES:-0}"
+SKIP_SERVICES="${SKIP_SERVICES:-0}"
 DOCKER_ON="${DOCKER_ON:-0}"
 HEADLESS="${HEADLESS:-0}"
 
@@ -159,6 +163,18 @@ else
   warn "skipping unused-device power-off"
 fi
 
+if [ "$SKIP_SERVICES" != "1" ]; then
+  log "  2.6 disabling unused services (printing, modem, update notifiers)"
+  # CUPS: printing daemon + network printer discovery (no printers configured)
+  systemctl disable --now cups.path cups.socket cups.service cups-browsed.service 2>/dev/null || true
+  # ModemManager: Wi-Fi only, no WWAN modem
+  systemctl disable --now ModemManager.service 2>/dev/null || true
+  # Cosmetic update notices + MOTD news (keep unattended-upgrades for security)
+  systemctl disable --now motd-news.timer update-notifier-download.timer update-notifier-motd.timer 2>/dev/null || true
+else
+  warn "skipping unused-service power-off"
+fi
+
 # ======================================================= PHASE 3: REMOTE ACCESS
 log "Phase 3 - remote access"
 
@@ -238,19 +254,18 @@ sudo -u "$ADMIN_USER" -H bash -lc '
   command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
 ' || warn "user tooling step failed; run it manually as $ADMIN_USER"
 
-if [ "$HEADLESS" = "1" ]; then
-  log "  4.3 disabling GDM (headless)"
-  systemctl disable --now gdm 2>/dev/null || true
-  systemctl set-default multi-user.target
+log "  4.3 snapd off at boot + don/doff/dstat toggles"
+# snapd only backs GUI snaps (Firefox, snap-store); don/doff toggle it.
+systemctl disable --now snapd.service snapd.socket 2>/dev/null || true
 
-  log "  4.3 installing don/doff/dstat desktop toggles"
-  sudo -u "$ADMIN_USER" -H bash -c 'cat >> "$HOME/.bash_aliases" <<'"'"'EOF'"'"'
+sudo -u "$ADMIN_USER" -H bash -c 'cat >> "$HOME/.bash_aliases" <<'"'"'EOF'"'"'
 # Desktop session toggles
 unalias don doff 2>/dev/null
 BL=/sys/class/backlight/gmux_backlight
 BL_STATE=$HOME/.doff_brightness
 
 don() {
+    sudo systemctl start snapd.socket snapd.service
     sudo systemctl start gdm
     if [ -f "$BL_STATE" ]; then
         sudo sh -c "echo 0 > $BL/bl_power"
@@ -262,10 +277,20 @@ doff() {
     cat "$BL/brightness" > "$BL_STATE" 2>/dev/null
     sudo sh -c "echo 1 > $BL/bl_power"
     sudo systemctl stop gdm
+    sudo systemctl stop snapd.service snapd.socket
 }
 
 alias dstat='"'"'systemctl is-active gdm'"'"'
 EOF' || warn "could not write $ADMIN_USER shell aliases"
+
+if [ "$HEADLESS" = "1" ]; then
+  log "  4.4 headless boot (no GUI): multi-user.target, GDM removed from boot"
+  systemctl set-default multi-user.target
+  # `systemctl disable gdm` is a no-op (static unit); drop the display-manager link.
+  rm -f /etc/systemd/system/display-manager.service
+  systemctl stop gdm 2>/dev/null || true
+else
+  log "  4.4 GUI on boot (default): GDM stays enabled; run 'doff' after SSH"
 fi
 
 # ================================================================ SUMMARY
@@ -279,6 +304,12 @@ printf '  devices off : bluetooth=%s camera=%s sd-reader=%s\n' \
   "$(rfkill list bluetooth 2>/dev/null | grep -q 'Soft blocked: yes' && echo yes || echo no)" \
   "$(lsmod | grep -q '^uvcvideo' && echo no || echo yes)" \
   "$(lsblk -o NAME 2>/dev/null | grep -qx 'sdb' && echo no || echo yes)"
+printf '  services off: cups=%s modemmanager=%s motd-news=%s\n' \
+  "$(systemctl is-active cups 2>/dev/null)" \
+  "$(systemctl is-active ModemManager 2>/dev/null)" \
+  "$(systemctl is-active motd-news.timer 2>/dev/null)"
+printf '  desktop     : gdm=%s, default=%s (use don/doff)\n' \
+  "$(systemctl is-active gdm 2>/dev/null)" "$(systemctl get-default)"
 printf '  mbpfan      : %s\n' "$(systemctl is-active mbpfan)"
 printf '  ufw         : %s\n' "$(ufw status | head -1)"
 printf '  dGPU driver : %s (0 = disabled)\n' "$(lsmod | grep -cE 'amdgpu|radeon')"
