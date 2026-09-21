@@ -3,9 +3,10 @@
 #
 # Phases (boot params, then hardware, then remote access, then workload):
 #   1. Boot params : GRUB quirks (SSD NCQ, IOMMU) - must precede first reboot
-#   2. Hardware    : apt helpers, dGPU off, fans, Wi-Fi reg domain, no-sleep
+#   2. Hardware    : apt helpers, dGPU off, fans, Wi-Fi reg domain, no-sleep,
+#                    unused devices off (Bluetooth, camera, SD reader)
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
-#   4. Workload    : dev toolchain, Docker, Node/uv, (headless)
+#   4. Workload    : dev toolchain, Docker (off on demand), Node/uv, (headless)
 #
 # Usage:
 #   sudo ADMIN_USER=saturn \
@@ -21,6 +22,8 @@
 #   COUNTRY       2-letter Wi-Fi country code (default: skip reg-domain step)
 #   SKIP_DGPU=1   do not blacklist the AMD dGPU
 #   SKIP_GRUB=1   do not touch GRUB cmdline
+#   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader
+#   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
 #   HEADLESS=1    disable GDM (saves ~0.5-1 GB RAM)
 #
 set -euo pipefail
@@ -43,6 +46,8 @@ LAN_CIDR="${LAN_CIDR:-}"
 COUNTRY="${COUNTRY:-}"
 SKIP_DGPU="${SKIP_DGPU:-0}"
 SKIP_GRUB="${SKIP_GRUB:-0}"
+SKIP_DEVICES="${SKIP_DEVICES:-0}"
+DOCKER_ON="${DOCKER_ON:-0}"
 HEADLESS="${HEADLESS:-0}"
 
 if [ -n "${SSH_PUBKEY_FILE:-}" ] && [ -z "${SSH_PUBKEY:-}" ]; then
@@ -131,6 +136,29 @@ sudo -u "$ADMIN_USER" -H bash -lc '
   gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null || true
 ' || true
 
+if [ "$SKIP_DEVICES" != "1" ] && [ "$IS_MAC" = "1" ]; then
+  log "  2.5 turning off unused devices (Bluetooth, camera, SD reader)"
+  # Bluetooth: stop service + soft-block radio (persists via systemd-rfkill)
+  systemctl disable --now bluetooth 2>/dev/null || true
+  rfkill block bluetooth 2>/dev/null || true
+
+  # FaceTime HD camera: never bind its driver
+  echo "blacklist uvcvideo" > /etc/modprobe.d/disable-camera.conf
+
+  # SD card reader (Apple 05ac:8406): deauthorize wherever it enumerated + persist
+  for dev in /sys/bus/usb/devices/*/; do
+    if [ "$(cat "$dev/idVendor" 2>/dev/null)" = "05ac" ] && \
+       [ "$(cat "$dev/idProduct" 2>/dev/null)" = "8406" ]; then
+      echo 0 > "$dev/authorized" 2>/dev/null || true
+    fi
+  done
+  printf '%s\n' 'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="8406", ATTR{authorized}="0"' \
+    > /etc/udev/rules.d/70-cardreader-off.rules
+  udevadm control --reload-rules
+else
+  warn "skipping unused-device power-off"
+fi
+
 # ======================================================= PHASE 3: REMOTE ACCESS
 log "Phase 3 - remote access"
 
@@ -174,7 +202,7 @@ ufw --force enable
 # ========================================================= PHASE 4: WORKLOAD
 log "Phase 4 - workload tooling"
 
-log "  4.1 dev packages + Docker"
+log "  4.1 dev packages + Docker (off on demand)"
 apt-get install -y \
   git build-essential ca-certificates curl wget gnupg unzip zip \
   tmux screen htop jq ripgrep fd-find bat tree gh \
@@ -182,7 +210,20 @@ apt-get install -y \
 [ -x "$(command -v fdfind 2>/dev/null)" ] && ln -sf "$(command -v fdfind)" /usr/local/bin/fd
 [ -x "$(command -v batcat 2>/dev/null)" ] && ln -sf "$(command -v batcat)" /usr/local/bin/bat
 usermod -aG docker "$ADMIN_USER"
-systemctl enable --now docker
+if [ "$DOCKER_ON" = "1" ]; then
+  systemctl enable --now containerd docker docker.socket
+else
+  # Idle box: don't run dockerd/containerd until needed.
+  systemctl disable --now docker.socket docker containerd 2>/dev/null || true
+fi
+
+log "  4.1b Docker on-demand helpers"
+sudo -u "$ADMIN_USER" -H bash -c 'cat >> "$HOME/.bash_aliases" <<'"'"'EOF'"'"'
+# Docker on-demand (installed but off by default)
+dockeron()  { sudo systemctl enable --now containerd docker docker.socket; }
+dockeroff() { sudo systemctl disable --now docker.socket docker containerd; }
+dkstat()    { systemctl is-active containerd docker docker.socket; }
+EOF' || warn "could not write $ADMIN_USER docker aliases"
 
 log "  4.2 Node (fnm) + uv for $ADMIN_USER"
 sudo -u "$ADMIN_USER" -H bash -lc '
@@ -231,7 +272,13 @@ fi
 log "Summary"
 printf '  grub        : %s\n' "$(grep '^GRUB_CMDLINE_LINUX_DEFAULT' /etc/default/grub)"
 printf '  sshd        : %s / %s\n' "$(systemctl is-active ssh)" "$(systemctl is-enabled ssh)"
-printf '  docker      : %s\n' "$(docker --version 2>/dev/null || echo missing)"
+printf '  docker      : %s (service %s; use dockeron/dockeroff)\n' \
+  "$(docker --version 2>/dev/null | sed 's/Docker version //;s/,.*//' || echo missing)" \
+  "$(systemctl is-active docker 2>/dev/null)"
+printf '  devices off : bluetooth=%s camera=%s sd-reader=%s\n' \
+  "$(rfkill list bluetooth 2>/dev/null | grep -q 'Soft blocked: yes' && echo yes || echo no)" \
+  "$(lsmod | grep -q '^uvcvideo' && echo no || echo yes)" \
+  "$(lsblk -o NAME 2>/dev/null | grep -qx 'sdb' && echo no || echo yes)"
 printf '  mbpfan      : %s\n' "$(systemctl is-active mbpfan)"
 printf '  ufw         : %s\n' "$(ufw status | head -1)"
 printf '  dGPU driver : %s (0 = disabled)\n' "$(lsmod | grep -cE 'amdgpu|radeon')"

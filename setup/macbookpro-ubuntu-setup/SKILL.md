@@ -1,6 +1,6 @@
 ---
 name: macbookpro-ubuntu-setup
-description: Use ONLY when provisioning a freshly installed Ubuntu on an Apple MacBook Pro (MacBookPro11,x, e.g. 11,5) for headless remote agentic-coding use. Covers required GRUB kernel parameters, Apple driver checks, disabling the AMD dGPU (iGPU-only), key-only SSH, Tailscale, no-sleep/lid handling, dev toolchain, mbpfan, UFW hardening, and the Wi-Fi regulatory domain. Trigger on "fresh Ubuntu on MacBook Pro", "set up this MacBook", "SSH into the Ubuntu MacBook".
+description: Use ONLY when provisioning a freshly installed Ubuntu on an Apple MacBook Pro (MacBookPro11,x, e.g. 11,5) for headless remote agentic-coding use. Covers required GRUB kernel parameters, Apple driver checks, disabling the AMD dGPU (iGPU-only), key-only SSH, Tailscale, no-sleep/lid handling, dev toolchain, mbpfan, UFW hardening, the Wi-Fi regulatory domain, turning off unused devices (Bluetooth, FaceTime camera, SD card reader), and installing Docker but leaving it off on demand. Trigger on "fresh Ubuntu on MacBook Pro", "set up this MacBook", "SSH into the Ubuntu MacBook", "turn off Bluetooth/camera/SD reader", "enable/disable Docker on the MacBook".
 ---
 
 # Fresh Ubuntu on a MacBook Pro -> remote agentic-coding box
@@ -26,9 +26,10 @@ applies the GRUB parameters, dGPU blacklist, initramfs, and logind changes.
 ```
 Phase 0  Preflight        read-only: identify box, collect inputs, driver sanity
 Phase 1  Boot parameters  GRUB cmdline quirks (SSD NCQ, IOMMU)             <-- first
-Phase 2  Hardware         dGPU off, fans, Wi-Fi reg domain, power/sleep
+Phase 2  Hardware         dGPU off, fans, Wi-Fi reg domain, power/sleep,
+                          unused devices off (Bluetooth/camera/SD reader)
 Phase 3  Remote access    base pkgs, key-only SSH, Tailscale, UFW
-Phase 4  Workload         dev toolchain, Docker, Node/uv, Pro, (headless)
+Phase 4  Workload         dev toolchain, Docker (off on demand), Node/uv, (headless)
 Phase 5  Reboot + verify  apply everything, confirm SSH from the client
 ```
 
@@ -162,8 +163,44 @@ gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'no
 gsettings set org.gnome.desktop.session idle-delay 0
 ```
 
+### 2.5 Power: turn off unused devices (Bluetooth, camera, SD reader)
+
+A headless coding box does not need Bluetooth, the FaceTime HD camera, or the SD
+card reader. Turning them off is zero-risk for coding and shaves a little idle
+power. (This unit has no Ethernet and only Wi-Fi, so keep Wi-Fi.)
+
+```bash
+# Bluetooth: stop the service and soft-block the radio (persists via systemd-rfkill)
+systemctl disable --now bluetooth
+rfkill block bluetooth
+
+# FaceTime HD camera: never let its driver bind
+echo "blacklist uvcvideo" > /etc/modprobe.d/disable-camera.conf
+
+# SD card reader: deauthorize the USB device (true off) + persist the block.
+# Port is 2-4 here; confirm with: lsusb | grep -i card  ->  05ac:8406
+echo 0 > /sys/bus/usb/devices/2-4/authorized
+printf '%s\n' 'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="8406", ATTR{authorized}="0"' \
+  > /etc/udev/rules.d/70-cardreader-off.rules
+udevadm control --reload-rules
+```
+
+Revert any of them:
+
+```bash
+systemctl enable --now bluetooth && rfkill unblock bluetooth
+rm /etc/modprobe.d/disable-camera.conf
+rm /etc/udev/rules.d/70-cardreader-off.rules && echo 1 > /sys/bus/usb/devices/2-4/authorized
+```
+
+Deliberately **not** touched: SATA ALPM (`max_performance`) and PCIe ASPM
+(`default`). They save only ~1-2 W and risk I/O instability on a remote box with
+no physical access — not worth it. The dGPU is the dominant draw and cannot be
+parked on 11,x (see 2.1 and Gotchas).
+
 **Phase 2 verify:** iGPU drives the panel, dGPU has no driver, fans active,
-`iw reg get` shows your country, sleep targets masked.
+`iw reg get` shows your country, sleep targets masked, Bluetooth soft-blocked,
+`uvcvideo` not loaded, `sdb`/card reader gone (`lsblk`).
 
 ## Phase 3 — Remote access
 
@@ -227,7 +264,7 @@ ufw status verbose
 
 ## Phase 4 — Workload tooling
 
-### 4.1 Dev packages + Docker
+### 4.1 Dev packages + Docker (installed, left OFF)
 
 ```bash
 apt-get install -y \
@@ -237,8 +274,25 @@ apt-get install -y \
 ln -sf "$(command -v fdfind)" /usr/local/bin/fd
 ln -sf "$(command -v batcat)" /usr/local/bin/bat
 usermod -aG docker "$ADMIN_USER"
-systemctl enable --now docker
+
+# Docker is installed but NOT running: the box is idle most of the time and
+# containerd/dockerd only burn RAM/CPU when there are no containers. Leave it
+# off and start it on demand.
+systemctl disable --now docker.socket docker containerd 2>/dev/null || true
 ```
+
+Add on-demand helpers to `~/.bash_aliases` (Ubuntu's default `~/.bashrc` sources it):
+
+```bash
+cat >> ~/.bash_aliases <<'EOF'
+# Docker on-demand (installed but off by default)
+dockeron()  { sudo systemctl enable --now containerd docker docker.socket; }
+dockeroff() { sudo systemctl disable --now docker.socket docker containerd; }
+dkstat()    { systemctl is-active containerd docker docker.socket; }
+EOF
+```
+
+Set `DOCKER_ON=1` at setup time if you want Docker running from the start.
 
 ### 4.2 Node LTS + Python uv (run as `ADMIN_USER`, not root)
 
@@ -334,6 +388,12 @@ it survives lid-close. That is the working state.
   recovery path (or re-enable passwords with a `sed` on the hardening drop-in).
 - **Back up the client private key**; with passwords off, losing it needs local access.
 - **Local IP is DHCP** and may change (e.g. `<LAN IP>`); prefer the Tailscale name.
+- **Docker is installed but off by default** (no containers on an idle box). Use
+  `dockeron` / `dockeroff` / `dkstat`. Because the daemon is disabled, containers
+  will **not** autostart after a reboot until you run `dockeron`.
+- **Unused devices are off**: Bluetooth soft-blocked, `uvcvideo` blacklisted,
+  SD reader deauthorized (see 2.5 for the one-line reverts). The card reader's USB
+  path (`2-4`) is stable on this model but can change if USB topology changes.
 - **Battery health** may be degraded (this unit: 56%); fine on AC, poor unplugged.
 
 ## Bundled script
@@ -341,3 +401,7 @@ it survives lid-close. That is the working state.
 `scripts/setup.sh` implements Phases 1-4 (all non-interactive steps) in this order
 and prints the manual follow-ups. Set the variables at the top (or export them),
 then run as root. See the header of `scripts/setup.sh` for options.
+
+Relevant options: `SKIP_DEVICES=1` (keep Bluetooth/camera/SD reader on),
+`DOCKER_ON=1` (leave Docker enabled at boot instead of on-demand), plus
+`SKIP_DGPU`, `SKIP_GRUB`, `HEADLESS`.
