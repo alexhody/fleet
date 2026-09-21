@@ -1,6 +1,6 @@
 ---
 name: macbookpro-ubuntu-setup
-description: Use ONLY when provisioning a freshly installed Ubuntu on an Apple MacBook Pro (MacBookPro11,x, e.g. 11,5) for headless remote agentic-coding use. Covers required GRUB kernel parameters, Apple driver checks, disabling the AMD dGPU (iGPU-only), key-only SSH, Tailscale, no-sleep/lid handling, dev toolchain, mbpfan, UFW hardening, the Wi-Fi regulatory domain, turning off unused devices (Bluetooth, FaceTime camera, SD card reader) and unused services (CUPS printing, ModemManager, update-notifier/motd-news), and installing Docker but leaving it off on demand. Trigger on "fresh Ubuntu on MacBook Pro", "set up this MacBook", "SSH into the Ubuntu MacBook", "turn off Bluetooth/camera/SD reader", "disable CUPS/ModemManager", "enable/disable Docker on the MacBook".
+description: Use ONLY when provisioning a freshly installed Ubuntu on an Apple MacBook Pro (MacBookPro11,x, e.g. 11,5) for headless remote agentic-coding use. Covers required GRUB kernel parameters, Apple driver checks, disabling the AMD dGPU (iGPU-only), key-only SSH, Tailscale, no-sleep/lid handling, dev toolchain, mbpfan, UFW hardening, the Wi-Fi regulatory domain and Wi-Fi power-save, turning off unused devices (Bluetooth, FaceTime camera, SD card reader) and unused services (CUPS printing, ModemManager, update-notifier/motd-news), and installing Docker but leaving it off on demand. Trigger on "fresh Ubuntu on MacBook Pro", "set up this MacBook", "SSH into the Ubuntu MacBook", "turn off Bluetooth/camera/SD reader", "disable CUPS/ModemManager", "turn off Wi-Fi power-save", "enable/disable Docker on the MacBook".
 ---
 
 # Fresh Ubuntu on a MacBook Pro -> remote agentic-coding box
@@ -142,6 +142,38 @@ update-initramfs -u
 iw reg get | head -3          # expect: country $COUNTRY
 ```
 
+### 2.3b Disable Wi-Fi power-save (latency over micro-power)
+
+`brcmfmac` leaves power-save **on**, so the AP buffers frames until the next wake
+interval. On this box that adds only jitter, not loss: measured ping to `1.1.1.1`
+went from `mdev ~40 ms / max ~240 ms` to `mdev ~3 ms / max ~34 ms` with it off, at
+`0%` packet loss either way. It saves just ~0.1-0.4 W, which is negligible on a box
+that normally sits on AC. Because this is a headless agent box (long-lived SSH and
+streaming agent output), trade the micro-power for steady latency. Set the global
+default, pin existing connections, then reapply:
+
+```bash
+# Global default for future connections: 2 = disable (0=default,1=ignore,2=disable,3=enable)
+cat > /etc/NetworkManager/conf.d/99-wifi-powersave.conf <<'EOF'
+[connection]
+wifi.powersave = 2
+EOF
+
+# Pin existing Wi-Fi connections too
+for c in $(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="802-11-wireless"{print $1}'); do
+  nmcli connection modify "$c" wifi.powersave 2
+done
+
+iw dev wlp4s0 set power_save off
+systemctl reload NetworkManager
+nmcli device reapply wlp4s0
+iw dev wlp4s0 get power_save          # expect: Power save: off
+```
+
+This is a latency/jitter trade-off, **not** a stability requirement: at good signal
+(this box: -35 dBm) power-save never dropped packets. Revert for battery life with
+`nmcli connection modify <name> wifi.powersave 3` (or delete the conf.d file).
+
 ### 2.4 Power: never sleep, ignore lid-close
 
 Critical for a headless box: closing the lid must not suspend it.
@@ -220,9 +252,10 @@ Re-enable any with `systemctl enable --now <unit>`. Deliberately **kept**:
 left running too — it is tiny and `cups-browsed` was its only consumer.
 
 **Phase 2 verify:** iGPU drives the panel, dGPU has no driver, fans active,
-`iw reg get` shows your country, sleep targets masked, Bluetooth soft-blocked,
-`uvcvideo` not loaded, `sdb`/card reader gone (`lsblk`), and
-`cups`/`ModemManager`/`motd-news.timer` inactive.
+`iw reg get` shows your country, Wi-Fi power-save off (`iw dev <if> get power_save`),
+sleep targets masked, Bluetooth soft-blocked, `uvcvideo` not loaded,
+`sdb`/card reader gone (`lsblk`), and `cups`/`ModemManager`/`motd-news.timer`
+inactive.
 
 ## Phase 3 — Remote access
 
@@ -461,6 +494,11 @@ it survives lid-close. That is the working state.
   boot without a GUI use `set-default multi-user.target` + remove
   `/etc/systemd/system/display-manager.service` (see 4.4).
 - **Battery health** may be degraded (this unit: 56%); fine on AC, poor unplugged.
+- **Wi-Fi power-save is off** (`wifi.powersave=2` in `/etc/NetworkManager/conf.d/99-wifi-powersave.conf`
+  plus pinned per connection) to cut latency jitter (~40 ms -> ~3 ms `mdev`) for a
+  cost of ~0.1-0.4 W. It only added jitter, never packet loss, so this is a
+  latency-over-power choice, not a fix. Re-enable per connection with
+  `nmcli connection modify <name> wifi.powersave 3` if you want battery life.
 
 ## Bundled script
 
@@ -470,6 +508,7 @@ then run as root. See the header of `scripts/setup.sh` for options.
 
 Relevant options: `SKIP_DEVICES=1` (keep Bluetooth/camera/SD reader on),
 `SKIP_SERVICES=1` (keep CUPS/ModemManager/update-notifier on),
+`SKIP_WIFI_PS=1` (keep Wi-Fi power-save on — battery over latency),
 `DOCKER_ON=1` (leave Docker enabled at boot instead of on-demand),
 `HEADLESS=1` (boot to a text console instead of the default GUI-on-boot), plus
 `SKIP_DGPU`, `SKIP_GRUB`.

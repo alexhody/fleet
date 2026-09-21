@@ -3,9 +3,10 @@
 #
 # Phases (boot params, then hardware, then remote access, then workload):
 #   1. Boot params : GRUB quirks (SSD NCQ, IOMMU) - must precede first reboot
-#   2. Hardware    : apt helpers, dGPU off, fans, Wi-Fi reg domain, no-sleep,
-#                    unused devices off (Bluetooth, camera, SD reader) and
-#                    unused services off (CUPS, ModemManager, update notifiers)
+#   2. Hardware    : apt helpers, dGPU off, fans, Wi-Fi reg domain, Wi-Fi
+#                    power-save off, no-sleep, unused devices off (Bluetooth,
+#                    camera, SD reader) and unused services off (CUPS,
+#                    ModemManager, update notifiers)
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
 #   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
 #                    GUI-on-boot + don/doff toggles (HEADLESS=1 = no GUI)
@@ -24,6 +25,7 @@
 #   COUNTRY       2-letter Wi-Fi country code (default: skip reg-domain step)
 #   SKIP_DGPU=1   do not blacklist the AMD dGPU
 #   SKIP_GRUB=1   do not touch GRUB cmdline
+#   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
 #   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader
 #   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/update-notifier
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
@@ -49,6 +51,7 @@ LAN_CIDR="${LAN_CIDR:-}"
 COUNTRY="${COUNTRY:-}"
 SKIP_DGPU="${SKIP_DGPU:-0}"
 SKIP_GRUB="${SKIP_GRUB:-0}"
+SKIP_WIFI_PS="${SKIP_WIFI_PS:-0}"
 SKIP_DEVICES="${SKIP_DEVICES:-0}"
 SKIP_SERVICES="${SKIP_SERVICES:-0}"
 DOCKER_ON="${DOCKER_ON:-0}"
@@ -120,6 +123,30 @@ EOF
   systemctl daemon-reload
   systemctl enable --now wifi-regdom.service
   update-initramfs -u
+fi
+
+if [ "$SKIP_WIFI_PS" != "1" ] && [ "$IS_MAC" = "1" ]; then
+  log "  2.3b Wi-Fi power-save off (latency; negligible cost on AC)"
+  WIFI_IF="$(nmcli -t -f DEVICE,TYPE dev 2>/dev/null | awk -F: '$2=="wifi"{print $1; exit}')"
+  # Global default for future connections: 2 = disable (0=default,1=ignore,2=disable,3=enable)
+  cat > /etc/NetworkManager/conf.d/99-wifi-powersave.conf <<'EOF'
+[connection]
+wifi.powersave = 2
+EOF
+  if [ -n "$WIFI_IF" ]; then
+    while IFS=: read -r name type; do
+      [ "$type" = "802-11-wireless" ] || continue
+      nmcli connection modify "$name" wifi.powersave 2 || true
+    done < <(nmcli -t -f NAME,TYPE connection show 2>/dev/null)
+    systemctl reload NetworkManager 2>/dev/null || systemctl restart NetworkManager 2>/dev/null || true
+    iw dev "$WIFI_IF" set power_save off || true
+    nmcli device reapply "$WIFI_IF" >/dev/null 2>&1 || true
+    echo "  $WIFI_IF $(iw dev "$WIFI_IF" get power_save 2>/dev/null | sed 's/^ *//')"
+  else
+    warn "no Wi-Fi interface found; power-save preference set for future connections"
+  fi
+else
+  warn "skipping Wi-Fi power-save change"
 fi
 
 log "  2.4 disable sleep / lid-close / power-key"
@@ -314,6 +341,9 @@ printf '  services off: cups=%s modemmanager=%s motd-news=%s\n' \
   "$(systemctl is-active motd-news.timer 2>/dev/null)"
 printf '  desktop     : gdm=%s, default=%s (use don/doff)\n' \
   "$(systemctl is-active gdm 2>/dev/null)" "$(systemctl get-default)"
+printf '  wifi        : power_save=%s (NM wifi.powersave=%s)\n' \
+  "$(iw dev "$(nmcli -t -f DEVICE,TYPE dev 2>/dev/null | awk -F: '$2=="wifi"{print $1; exit}')" get power_save 2>/dev/null | sed 's/.*: //')" \
+  "$(grep -h '^wifi.powersave' /etc/NetworkManager/conf.d/99-wifi-powersave.conf 2>/dev/null | awk -F= '{gsub(/ /,"",$2); print $2}')"
 printf '  mbpfan      : %s\n' "$(systemctl is-active mbpfan)"
 printf '  ufw         : %s\n' "$(ufw status | head -1)"
 printf '  dGPU driver : %s (0 = disabled)\n' "$(lsmod | grep -cE 'amdgpu|radeon')"
