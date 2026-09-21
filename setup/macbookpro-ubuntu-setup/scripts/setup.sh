@@ -239,6 +239,10 @@ sudo -u "$ADMIN_USER" -H bash -c 'cat >> "$HOME/.bash_aliases" <<'"'"'EOF'"'"'
 dockeron()  { sudo systemctl enable --now containerd docker docker.socket; }
 dockeroff() { sudo systemctl disable --now docker.socket docker containerd; }
 dkstat()    { systemctl is-active containerd docker docker.socket; }
+
+# Shell shortcuts
+alias oc='"'"'opencode'"'"'
+alias c='"'"'clear'"'"'
 EOF' || warn "could not write $ADMIN_USER docker aliases"
 
 log "  4.2 Node (fnm) + uv for $ADMIN_USER"

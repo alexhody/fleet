@@ -311,6 +311,10 @@ cat >> ~/.bash_aliases <<'EOF'
 dockeron()  { sudo systemctl enable --now containerd docker docker.socket; }
 dockeroff() { sudo systemctl disable --now docker.socket docker containerd; }
 dkstat()    { systemctl is-active containerd docker docker.socket; }
+
+# Shell shortcuts
+alias oc='opencode'
+alias c='clear'
 EOF
 ```
 
