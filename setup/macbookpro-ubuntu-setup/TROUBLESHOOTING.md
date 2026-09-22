@@ -94,6 +94,10 @@ boot until GDM takes over.
 - amdgpu `EDID err … eDP-2`: the gmux never routes the panel to the dGPU.
 - `ata1.00: unexpected _GTF length (8)`: Apple ACPI quirk.
 - `ata1.00: FORCE: modified (max_sec=)`: the cap being applied.
+- brcmfmac `no clm_blob available … limited channels`: Ubuntu ships no channel file
+  for this card; the firmware's built-in list is used and 5 GHz works.
+- brcmfmac `fail to get arp ip table err:-52`: the 2015 firmware lacks ARP offload.
+- `Dependency failed for sssd-*.socket`: SSSD is unconfigured. `setup.sh` masks it.
 
 ## Access
 
@@ -155,6 +159,8 @@ sudo rm /etc/modprobe.d/disable-camera.conf
 sudo rm /etc/udev/rules.d/70-cardreader-off.rules && echo 1 | sudo tee /sys/bus/usb/devices/2-4/authorized
 # CUPS, ModemManager, notifiers
 sudo systemctl enable --now cups.socket cups.service cups-browsed ModemManager motd-news.timer
+# SSSD (only if you join a company/LDAP domain)
+sudo systemctl unmask sssd.service sssd-{nss,autofs,pac,pam,pam-priv,ssh,sudo}.socket
 # Wi-Fi power-save back on (battery over latency)
 sudo rm /etc/NetworkManager/conf.d/99-wifi-powersave.conf; nmcli connection modify <name> wifi.powersave 3
 # zram

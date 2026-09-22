@@ -7,7 +7,7 @@
 #   2. Hardware    : apt helpers, dGPU off, fans, Wi-Fi reg domain, Wi-Fi
 #                    power-save off, no-sleep, unused devices off (Bluetooth,
 #                    camera, SD reader) and unused services off (CUPS,
-#                    ModemManager, update notifiers), zram swap, noatime,
+#                    ModemManager, update notifiers, SSSD), zram swap, noatime,
 #                    tmpfs /tmp, inotify limits
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
 #   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
@@ -30,7 +30,7 @@
 #   SKIP_GRUB=1   do not touch GRUB cmdline
 #   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
 #   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader
-#   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/update-notifier
+#   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/update-notifier/SSSD
 #   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
 #   HEADLESS=1    boot to a text console (default: GUI on boot + don/doff toggles)
@@ -282,6 +282,10 @@ if [ "$SKIP_SERVICES" != "1" ]; then
   systemctl disable --now ModemManager.service 2>/dev/null || true
   # Cosmetic update notices + MOTD news (keep unattended-upgrades for security)
   systemctl disable --now motd-news.timer update-notifier-download.timer update-notifier-motd.timer 2>/dev/null || true
+  # SSSD (company/LDAP logins): unconfigured here, so its sockets fail at every boot.
+  # Masked, not removed: PAM and nsswitch reference it.
+  systemctl mask sssd.service sssd-nss.socket sssd-autofs.socket sssd-pac.socket \
+    sssd-pam.socket sssd-pam-priv.socket sssd-ssh.socket sssd-sudo.socket 2>/dev/null || true
 else
   warn "skipping unused-service power-off"
 fi

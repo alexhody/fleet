@@ -53,7 +53,7 @@ What it sets up:
 | dGPU | powered off through the gmux at boot, hidden from GNOME | `/etc/modprobe.d/blacklist-amdgpu.conf`, `/usr/local/sbin/dgpu-off`, `dgpu-off.service`, `/etc/udev/rules.d/72-dgpu-ignore.rules` |
 | Thermal/power | mbpfan, never sleeps, ignores lid | `/etc/systemd/logind.conf.d/99-no-sleep.conf` |
 | Wi-Fi | country set, power-save off | `wifi-regdom.service`, `/etc/NetworkManager/conf.d/99-wifi-powersave.conf` |
-| Off | Bluetooth, camera, SD reader, CUPS, ModemManager, update notifiers, snapd at boot | `/etc/modprobe.d/disable-camera.conf`, `/etc/udev/rules.d/70-cardreader-off.rules` |
+| Off | Bluetooth, camera, SD reader, CUPS, ModemManager, update notifiers, SSSD, snapd at boot | `/etc/modprobe.d/disable-camera.conf`, `/etc/udev/rules.d/70-cardreader-off.rules` |
 | Memory/disk | zram swap (zstd), `noatime`, tmpfs `/tmp`, inotify 524288 | `/etc/systemd/zram-generator.conf`, `/etc/fstab`, `/etc/sysctl.d/60-fleet-perf.conf` |
 | Access | key-only SSH, Tailscale, UFW (tailscale0 + LAN:22) | `/etc/ssh/sshd_config.d/99-hardening.conf` |
 | Toolchain | build-essential, git, gh, tmux, rg, fd, jq, Python, Docker, fnm + Node LTS, uv | |
