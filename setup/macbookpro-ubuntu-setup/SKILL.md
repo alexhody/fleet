@@ -1,6 +1,6 @@
 ---
 name: macbookpro-ubuntu-setup
-description: Use ONLY when provisioning a freshly installed Ubuntu on an Apple MacBook Pro (MacBookPro11,x, e.g. 11,5) for headless remote agentic-coding use. Covers required GRUB kernel parameters, Apple driver checks, powering off the AMD dGPU through the gmux (iGPU-only, and keeping GNOME Shell off it so boot does not hang), key-only SSH, Tailscale, no-sleep/lid handling, dev toolchain, mbpfan, UFW hardening, the Wi-Fi regulatory domain and Wi-Fi power-save, turning off unused devices (Bluetooth, FaceTime camera, SD card reader) and unused services (CUPS printing, ModemManager, update-notifier/motd-news), zram swap, noatime, tmpfs /tmp and inotify limits, the kernel-7.0 SSD write-size cap, and installing Docker but leaving it off on demand. Trigger on "fresh Ubuntu on MacBook Pro", "set up this MacBook", "SSH into the Ubuntu MacBook", "turn off Bluetooth/camera/SD reader", "disable CUPS/ModemManager", "turn off Wi-Fi power-save", "enable/disable Docker on the MacBook", "power off the dGPU", "boot hangs after dGPU change".
+description: Use ONLY when provisioning a freshly installed Ubuntu on an Apple MacBook Pro (MacBookPro11,x, e.g. 11,5) for headless remote agentic-coding use. Covers required GRUB kernel parameters, Apple driver checks, powering off the AMD dGPU through the gmux (iGPU-only, and keeping GNOME Shell off it so boot does not hang), key-only SSH, Tailscale, no-sleep/lid handling, dev toolchain, mbpfan, UFW hardening, the Wi-Fi regulatory domain and Wi-Fi power-save, turning off unused devices (Bluetooth, FaceTime camera, SD card reader) and unused services (CUPS printing, ModemManager, update-notifier/motd-news), zram swap, noatime, tmpfs /tmp and inotify limits, the kernel-7.0 SSD write-size cap with NCQ on, and installing Docker but leaving it off on demand. Trigger on "fresh Ubuntu on MacBook Pro", "set up this MacBook", "SSH into the Ubuntu MacBook", "turn off Bluetooth/camera/SD reader", "disable CUPS/ModemManager", "turn off Wi-Fi power-save", "enable/disable Docker on the MacBook", "power off the dGPU", "boot hangs after dGPU change".
 ---
 
 # Fresh Ubuntu on a MacBook Pro -> remote agentic-coding box
@@ -25,7 +25,7 @@ applies the GRUB parameters, dGPU power-off, initramfs, and logind changes.
 
 ```
 Phase 0  Preflight        read-only: identify box, collect inputs, driver sanity
-Phase 1  Boot parameters  GRUB cmdline quirks (SSD NCQ, IOMMU), SSD write cap <-- first
+Phase 1  Boot parameters  GRUB cmdline quirks (SSD write cap, IOMMU), NCQ on <-- first
 Phase 2  Hardware         dGPU off, fans, Wi-Fi reg domain, power/sleep,
                           unused devices + services off, zram/noatime/tmpfs
 Phase 3  Remote access    base pkgs, key-only SSH, Tailscale, UFW
@@ -63,17 +63,38 @@ Phases 1-2 and treat it as generic Ubuntu.
 These two quirks are required for stability on this hardware and must be set before
 the first reboot:
 
-- `libata.force=noncq` — the Apple `SM0512G` SSD has buggy NCQ; disabling it avoids
-  ATA I/O errors/hangs under Linux.
+- `libata.force=max_sec=2560` — caps each I/O at 1280 KiB. Kernel 7.0 raised the
+  default to 4 MiB and this SSD's firmware cannot take it (see 1.1).
 - `intel_iommu=off` — Apple's DMAR/IOMMU tables are unreliable; disabling avoids
   boot/DMA problems.
+
+NCQ stays **on**: do **not** add the old `libata.force=noncq` advice for these Macs.
+It costs up to 15× random I/O on this controller and is not needed once writes are
+capped (1.1). It would also silently cancel `max_sec`, since libata applies only the
+first `force` entry per device.
 
 `splash` is left out on purpose: `plymouth-quit-wait` holds boot until GDM takes
 over, which cost 24 s of a 32 s boot on saturn. Without it boot takes about 11 s.
 
 ```bash
 cp /etc/default/grub /etc/default/grub.bak
-sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet libata.force=noncq intel_iommu=off"|' /etc/default/grub
+sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet libata.force=max_sec=2560 intel_iommu=off"|' /etc/default/grub
+# One-boot escape if NCQ ever misbehaves: `grub-reboot noncq-fallback && reboot`
+if ! grep -q noncq-fallback /etc/grub.d/40_custom; then
+  BOOT_UUID=$(findmnt -no UUID /boot 2>/dev/null || findmnt -no UUID /)
+  KP=$(mountpoint -q /boot && echo "" || echo /boot)
+  cat >> /etc/grub.d/40_custom <<EOF
+
+menuentry 'Ubuntu (noncq fallback)' --id noncq-fallback {
+	insmod gzio
+	insmod part_gpt
+	insmod ext2
+	search --no-floppy --fs-uuid --set=root $BOOT_UUID
+	linux	$KP/vmlinuz root=$(findmnt -no SOURCE /) ro quiet libata.force=noncq intel_iommu=off
+	initrd	$KP/initrd.img
+}
+EOF
+fi
 update-grub
 grep GRUB_CMDLINE_LINUX_DEFAULT /etc/default/grub   # verify
 ```
@@ -91,21 +112,41 @@ cannot take it: sustained writes throw `host bus error` and the root filesystem 
 read-only. A linux-ide report on a MacBookPro11,4 hit this after ~28 GB written in
 one boot. The upstream quirk is not merged, so cap the I/O size yourself.
 
-`libata.force=max_sec=2560` would do it, but libata applies only the **first**
-`force` entry that matches a device, so `noncq,max_sec=2560` silently drops
-`max_sec`. Use a udev rule instead:
+`libata.force=max_sec=2560` (Phase 1) caps it in the kernel from the moment the disk
+is probed, so early boot is covered too. It works only as the **sole** `force` entry.
+The udev rule below is a second guard in case someone adds another entry:
 
 ```bash
 cat > /etc/udev/rules.d/60-apple-ssd-max-sectors.rules <<'EOF'
 # Apple SSD SM0xxxG (firmware BXW1SA0Q) throws host bus errors and drops the root fs
 # read-only on writes over 1280 KiB since kernel 7.0 raised the default to 4 MiB.
-# libata.force=max_sec=2560 cannot be combined with noncq (only the first entry applies).
+# Second guard: libata.force=max_sec=2560 caps it in the kernel, but only while it is
+# the sole force entry (libata applies the first match; noncq would win).
 ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]", ATTRS{model}=="APPLE SSD SM0*", ATTR{queue/max_sectors_kb}="1280"
 EOF
 udevadm control --reload
 udevadm trigger --action=change --subsystem-match=block --sysname-match=sda
 cat /sys/block/sda/queue/max_sectors_kb   # 1280
 ```
+
+**NCQ with the cap, measured on saturn** (fio, O_DIRECT; kernel 7.0.0-31):
+
+| | `noncq` (QD 1) | NCQ (QD 32) |
+| --- | --- | --- |
+| 4k random read, QD32 | 9,981 IOPS | 150,983 IOPS |
+| 4k random write, QD32 | 40,331 IOPS | 100,142 IOPS |
+| 4k mixed 70/30 | 8,122 IOPS | 101,695 IOPS |
+| 1M sequential read | 943 MB/s | 2,101 MB/s |
+| p99 random-read latency | 11.9 ms | 0.27 ms |
+
+The linux-ide reporter's failing and passing runs both had NCQ on, and the
+`noncq`-still-needed reports for these Macs are a different controller (2013
+S4LN053X01). On saturn, 28 GB of buffered incompressible writes plus 16k small
+files, and a full `fstrim` of 440 GiB, logged 0 ATA errors. The drive supports only
+unqueued TRIM, so the Samsung queued-TRIM bug does not apply.
+
+If `host bus error`, `FPDMA` timeouts or resets ever appear in `journalctl -k`,
+boot once without NCQ: `grub-reboot noncq-fallback && reboot`.
 
 ## Phase 2 — Hardware
 
@@ -338,8 +379,8 @@ left running too — it is tiny and `cups-browsed` was its only consumer.
 
 ### 2.7 Memory, disk and file-watch tuning
 
-The SSD runs at queue depth 1 (NCQ off), so every write and every swap-in is
-expensive. Move swap and scratch files to RAM and stop needless metadata writes:
+RAM is still far faster than the SSD, and every avoided write saves wear. Move swap
+and scratch files to RAM and stop needless metadata writes:
 
 - **zram swap** (zstd, up to 8 GB) ahead of the 4 GB `/swap.img`, which stays as a
   last resort. Keeps the box responsive when tsc, node and jest spike together.
@@ -576,8 +617,9 @@ reboot
 After it comes back:
 
 ```bash
-cat /proc/cmdline                            # expect quiet libata.force=noncq intel_iommu=off
-cat /sys/block/sda/queue/max_sectors_kb      # 1280
+cat /proc/cmdline                            # expect quiet libata.force=max_sec=2560 intel_iommu=off
+cat /sys/block/sda/device/queue_depth        # 32 (NCQ on)
+cat /sys/block/sda/queue/max_hw_sectors_kb   # 1280 (kernel cap applied)
 swapon --show                                # /dev/zram0 prio 100, /swap.img prio -1
 findmnt -no FSTYPE /tmp; findmnt -no OPTIONS /   # tmpfs; rw,noatime
 systemd-analyze | head -1                    # ~11 s without splash
@@ -597,11 +639,14 @@ it survives lid-close. That is the working state.
 
 ## Gotchas learned on real hardware
 
-- **GRUB quirks are mandatory here**: `libata.force=noncq` (Apple SSD NCQ bug) and
-  `intel_iommu=off` (Apple DMAR). Set before first boot.
+- **GRUB quirks are mandatory here**: `libata.force=max_sec=2560` (kernel 7.0 SSD
+  write-size regression) and `intel_iommu=off` (Apple DMAR). Set before first boot.
 - **`libata.force` applies one entry per device.** The first match wins, so
   `noncq,max_sec=2560` never applies `max_sec`, and the kernel logs no error — only
-  `FORCE: modified (noncq)`. Cap the SSD's I/O size with the udev rule (1.1).
+  `FORCE: modified (noncq)`. Keep `max_sec=2560` as the only entry; check for
+  `maxsec quirk is using value: 2560` in `dmesg`.
+- **`noncq` is not needed on this SSD.** Old advice for 2013–2015 Macs; on the
+  `144d:a801` controller it only costs up to 15× random I/O (1.1).
 - **`splash` costs ~20 s of boot** (32 → 11 s on saturn). `plymouth-quit-wait` blocks until GDM takes over
   the screen. Leave it off the cmdline on a headless box.
 - **dGPU power-off needs `amdgpu` bound.** With the driver blacklisted there is no

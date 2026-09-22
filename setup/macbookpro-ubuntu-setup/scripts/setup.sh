@@ -2,8 +2,8 @@
 # setup.sh - provision a fresh Ubuntu MacBook Pro as a remote agentic-coding box.
 #
 # Phases (boot params, then hardware, then remote access, then workload):
-#   1. Boot params : GRUB quirks (SSD NCQ, IOMMU), SSD write-size cap - must
-#                    precede first reboot
+#   1. Boot params : GRUB quirks (SSD write-size cap, IOMMU), NCQ on, noncq
+#                    fallback entry - must precede first reboot
 #   2. Hardware    : apt helpers, dGPU off, fans, Wi-Fi reg domain, Wi-Fi
 #                    power-save off, no-sleep, unused devices off (Bluetooth,
 #                    camera, SD reader) and unused services off (CUPS,
@@ -78,7 +78,23 @@ echo "  mac  : $IS_MAC"
 log "Phase 1 - GRUB boot parameters"
 if [ "$SKIP_GRUB" != "1" ] && [ "$IS_MAC" = "1" ]; then
   cp -n /etc/default/grub /etc/default/grub.bak 2>/dev/null || true
-  sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet libata.force=noncq intel_iommu=off"|' /etc/default/grub
+  sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet libata.force=max_sec=2560 intel_iommu=off"|' /etc/default/grub
+  # One-boot escape if NCQ ever misbehaves: `grub-reboot noncq-fallback && reboot`
+  if ! grep -q noncq-fallback /etc/grub.d/40_custom; then
+    BOOT_UUID=$(findmnt -no UUID /boot 2>/dev/null || findmnt -no UUID /)
+    KP=$(mountpoint -q /boot && echo "" || echo /boot)
+    cat >> /etc/grub.d/40_custom <<EOF
+  
+  menuentry 'Ubuntu (noncq fallback)' --id noncq-fallback {
+  	insmod gzio
+  	insmod part_gpt
+  	insmod ext2
+  	search --no-floppy --fs-uuid --set=root $BOOT_UUID
+  	linux	$KP/vmlinuz root=$(findmnt -no SOURCE /) ro quiet libata.force=noncq intel_iommu=off
+  	initrd	$KP/initrd.img
+  }
+EOF
+  fi
   update-grub
   echo "  set: $(grep '^GRUB_CMDLINE_LINUX_DEFAULT' /etc/default/grub)"
 else
@@ -90,7 +106,8 @@ if [ "$IS_MAC" = "1" ]; then
   cat > /etc/udev/rules.d/60-apple-ssd-max-sectors.rules <<'EOF'
 # Apple SSD SM0xxxG (firmware BXW1SA0Q) throws host bus errors and drops the root fs
 # read-only on writes over 1280 KiB since kernel 7.0 raised the default to 4 MiB.
-# libata.force=max_sec=2560 cannot be combined with noncq (only the first entry applies).
+# Second guard: libata.force=max_sec=2560 caps it in the kernel, but only while it is
+# the sole force entry (libata applies the first match; noncq would win).
 ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]", ATTRS{model}=="APPLE SSD SM0*", ATTR{queue/max_sectors_kb}="1280"
 EOF
   udevadm control --reload
