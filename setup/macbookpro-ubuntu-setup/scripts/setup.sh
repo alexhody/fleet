@@ -453,20 +453,35 @@ don() {
     sudo systemctl start snapd.socket snapd.service
     sudo systemctl start gdm
     if [ -f "$BL_STATE" ]; then
-        sudo sh -c "echo 0 > $BL/bl_power"
-        sudo sh -c "echo $(cat "$BL_STATE") > $BL/brightness"
+        echo 0 | sudo tee "$BL/bl_power" >/dev/null
+        sudo tee "$BL/brightness" < "$BL_STATE" >/dev/null
     fi
 }
 
 doff() {
     cat "$BL/brightness" > "$BL_STATE" 2>/dev/null
-    sudo sh -c "echo 1 > $BL/bl_power"
+    echo 1 | sudo tee "$BL/bl_power" >/dev/null
     sudo systemctl stop gdm
     sudo systemctl stop snapd.service snapd.socket
 }
 
 alias dstat='"'"'systemctl is-active gdm'"'"'
 EOF' || warn "could not write $ADMIN_USER shell aliases"
+
+# Let don/doff run without a password: only their exact commands, never a shell.
+SUDOERS_TMP="$(mktemp)"
+cat > "$SUDOERS_TMP" <<EOF
+# don/doff (~/.bash_aliases) toggle the desktop without a password prompt.
+$ADMIN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start gdm, /usr/bin/systemctl stop gdm, \\
+    /usr/bin/systemctl start snapd.socket snapd.service, /usr/bin/systemctl stop snapd.service snapd.socket, \\
+    /usr/bin/tee /sys/class/backlight/gmux_backlight/bl_power, /usr/bin/tee /sys/class/backlight/gmux_backlight/brightness
+EOF
+if visudo -cf "$SUDOERS_TMP" >/dev/null; then
+  install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/desktop-toggles
+else
+  warn "desktop-toggles sudoers rule failed validation; don/doff will ask for a password"
+fi
+rm -f "$SUDOERS_TMP"
 
 if [ "$HEADLESS" = "1" ]; then
   log "  4.4 headless boot (no GUI): multi-user.target, GDM removed from boot"

@@ -58,7 +58,7 @@ What it sets up:
 | Access | key-only SSH, Tailscale, UFW (tailscale0 + LAN:22) | `/etc/ssh/sshd_config.d/99-hardening.conf` |
 | Toolchain | build-essential, git, gh, tmux, rg, fd, jq, Python, Docker, fnm + Node LTS, uv | |
 | Agents | Claude Code, Codex, opencode; tool PATH above the `.bashrc` interactive guard; `~/jobs`, `~/Code` | `~/.bashrc` |
-| Shell | `don`/`doff`/`dstat` (desktop), `dockeron`/`dockeroff`/`dkstat` | `~/.bash_aliases` |
+| Shell | `don`/`doff`/`dstat` (desktop, no sudo password), `dockeron`/`dockeroff`/`dkstat` | `~/.bash_aliases`, `/etc/sudoers.d/desktop-toggles` |
 
 ## 3. Tailscale and key-only SSH
 
@@ -110,7 +110,7 @@ Optional: `sudo pro attach <TOKEN> && sudo pro enable esm-apps esm-infra livepat
 ## 6. Daily use
 
 - It boots to GDM. After `ssh saturn`, run `doff` to stop the desktop and blank
-  the panel. `don` brings it back.
+  the panel. `don` brings it back. Neither asks for a password.
 - Docker stays off until `dockeron`, so containers don't come back after a reboot.
 - Dev servers on saturn are reachable from the laptop at `saturn-mbp:<port>`.
 - Keep job files in `~/jobs`. `/tmp` is RAM and is wiped on every boot.

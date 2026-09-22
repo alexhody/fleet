@@ -139,6 +139,7 @@ ssh saturn 'bash -lic "command -v node"'        # interactive: path in fnm_multi
 | containers gone after reboot | Docker is off at boot | `dockeron`, or re-run setup with `DOCKER_ON=1` |
 | `snap` commands hang | snapd is off at boot | `don`, or `sudo systemctl start snapd.socket snapd.service` |
 | no GUI at the panel | `doff` was run, or `HEADLESS=1` | `don` |
+| `don`/`doff` ask for a password | sudoers rule missing, or the functions still use `sudo sh -c` | check `sudo -l` lists the `desktop-toggles` commands; re-run setup |
 | files in `/tmp` vanished | tmpfs, wiped on boot | use `~/jobs` |
 | apt fails on `liberror-perl` | broken `noble/main` index | `sudo rm -rf /var/lib/apt/lists/* && sudo apt-get update` |
 | 5 GHz networks missing | regulatory domain is `00` | `iw reg get`; re-run setup with `COUNTRY=` |
