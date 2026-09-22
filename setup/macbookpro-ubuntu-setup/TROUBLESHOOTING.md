@@ -99,6 +99,46 @@ boot until GDM takes over.
 - brcmfmac `fail to get arp ip table err:-52`: the 2015 firmware lacks ARP offload.
 - `Dependency failed for sssd-*.socket`: SSSD is unconfigured. `setup.sh` masks it.
 
+## Crashes and freezes
+
+### Saturn seems frozen
+
+Before power-cycling it, check whether it is really down or just unreachable over
+Tailscale:
+
+```bash
+ping <LAN IP>
+ssh saturn@<LAN IP>        # LAN path, skips Tailscale
+```
+
+If either answers, saturn is fine and the problem is the network or the laptop's
+Tailscale. A real kernel hang now panics and reboots by itself within about 40 s,
+so a box that stays down for minutes is more likely off the network than frozen.
+
+### Saturn rebooted by itself
+
+A kernel hang, oops or 5-minute I/O stall panicked it (`61-crash-reboot.conf`).
+Read the dump:
+
+```bash
+ls -t /var/lib/systemd/pstore/ | head -3
+sudo cat /var/lib/systemd/pstore/<newest>/*/dmesg.txt | grep -aE 'panic|BUG|RIP|Comm:|hung|lockup' | head
+```
+
+`pstore-efi-cleanup.service` then deletes the dump from NVRAM, and only once its
+copy is on disk. NVRAM also holds the Mac's boot settings, so it must not fill up.
+Check it with `ls /sys/firmware/efi/efivars | grep -c '^dump-'`, which should be 0.
+
+If the Mac ever stops booting after repeated crashes, NVRAM may be full. At the
+keyboard, hold `Option+Cmd+P+R` at power-on until the second chime.
+
+To stop the automatic reboots (for example, to read a panic on screen):
+`sudo rm /etc/sysctl.d/61-crash-reboot.conf && sudo sysctl kernel.panic=0 kernel.softlockup_panic=0 kernel.hardlockup_panic=0 kernel.hung_task_panic=0`.
+
+Test the whole chain (it crashes saturn on purpose):
+`sudo sh -c 'sync; echo c > /proc/sysrq-trigger'`. It should be back over SSH in
+about 40 s, with a new dump in `/var/lib/systemd/pstore/` and `verify.sh` all `ok`.
+
 ## Access
 
 ### Can't SSH in

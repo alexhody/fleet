@@ -25,6 +25,9 @@ check inotify      524288 "$(sysctl -n fs.inotify.max_user_watches)"
 check failed-units 0    "$(systemctl --failed --no-legend | wc -l | tr -d ' ')"
 for u in ssh tailscaled mbpfan; do check "$u" active "$(systemctl is-active "$u")"; done
 check sleep        masked "$(systemctl is-enabled sleep.target 2>/dev/null)"
+check panic-reboot 10   "$(sysctl -n kernel.panic)"
+check hang-panic   "1 1 1" "$(sysctl -n kernel.softlockup_panic kernel.hardlockup_panic kernel.hung_task_panic | xargs)"
+check nvram-dumps  0    "$(ls /sys/firmware/efi/efivars 2>/dev/null | grep -c '^dump-')"
 check tailscale    yes  "$(has ts "$(tailscale ip -4 2>/dev/null)")"
 
 # Remote agents run through non-interactive shells; every tool must resolve there.

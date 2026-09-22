@@ -8,7 +8,8 @@
 #                    power-save off, no-sleep, unused devices off (Bluetooth,
 #                    camera, SD reader) and unused services off (CUPS,
 #                    ModemManager, update notifiers, SSSD), zram swap, noatime,
-#                    tmpfs /tmp, inotify limits
+#                    tmpfs /tmp, inotify limits, crash recovery (panic on
+#                    hang, dump to pstore, auto-reboot, NVRAM cleanup)
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
 #   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
 #                    non-interactive-shell PATH, agent CLIs (Claude Code,
@@ -319,6 +320,50 @@ else
   warn "skipping memory/disk tuning"
 fi
 
+log "  2.8 crash recovery: panic on a kernel hang, save a dump, reboot in 10 s"
+cat > /etc/sysctl.d/61-crash-reboot.conf <<'EOF'
+# Unattended worker: turn a real kernel hang or oops into a panic, which saves a
+# dump to EFI pstore (archived to /var/lib/systemd/pstore on next boot), then reboot.
+kernel.panic = 10
+kernel.panic_on_oops = 1
+kernel.softlockup_panic = 1
+kernel.hardlockup_panic = 1
+# A task stuck in uninterruptible I/O for 5 minutes (e.g. a disk stall) is never healthy.
+kernel.hung_task_timeout_secs = 300
+kernel.hung_task_panic = 1
+EOF
+sysctl -p /etc/sysctl.d/61-crash-reboot.conf >/dev/null
+if [ "$IS_MAC" = "1" ]; then
+  cat > /usr/local/sbin/pstore-efi-cleanup <<'EOF'
+#!/bin/sh
+# systemd-pstore archives kernel crash dumps but leaves them in the Mac's NVRAM, which
+# also holds boot settings. Remove each dump once its archived copy exists on disk.
+for f in /sys/firmware/efi/efivars/dump-type0-*; do
+  [ -e "$f" ] || continue
+  # dump-type0-<part>-<count>-<time>-C-<guid>  ->  dmesg-efi_pstore-<time><part:2><count:3>
+  set -- $(basename "$f" | tr '-' ' ')
+  id=$(printf '%s%02d%03d' "$5" "$3" "$4")
+  ls /var/lib/systemd/pstore/*/*/"dmesg-efi_pstore-$id" >/dev/null 2>&1 || { echo "not archived, kept: $f"; continue; }
+  chattr -i "$f" && rm -f "$f" && echo "removed $(basename "$f")"
+done
+EOF
+  chmod +x /usr/local/sbin/pstore-efi-cleanup
+  cat > /etc/systemd/system/pstore-efi-cleanup.service <<'EOF'
+[Unit]
+Description=Remove archived crash dumps from EFI NVRAM
+After=systemd-pstore.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pstore-efi-cleanup
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable pstore-efi-cleanup.service
+fi
+
 # ======================================================= PHASE 3: REMOTE ACCESS
 log "Phase 3 - remote access"
 
@@ -535,6 +580,7 @@ printf '  tuning      : zram=%s tmp.mount=%s inotify=%s (zram + /tmp after reboo
   "$([ -f /etc/systemd/zram-generator.conf ] && echo configured || echo skipped)" \
   "$(systemctl is-enabled tmp.mount 2>/dev/null || echo skipped)" \
   "$(sysctl -n fs.inotify.max_user_watches)"
+printf '  crash       : panic reboot after %ss, NVRAM cleanup %s\n' "$(sysctl -n kernel.panic)" "$(systemctl is-enabled pstore-efi-cleanup 2>/dev/null || echo skipped)"
 printf '  dgpu-off    : %s (powers the dGPU off after reboot)\n' "$(systemctl is-enabled dgpu-off 2>/dev/null || echo skipped)"
 echo
 echo "NEXT (see SKILL.md steps 3-5):"

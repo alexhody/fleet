@@ -55,6 +55,7 @@ What it sets up:
 | Wi-Fi | country set, power-save off | `wifi-regdom.service`, `/etc/NetworkManager/conf.d/99-wifi-powersave.conf` |
 | Off | Bluetooth, camera, SD reader, CUPS, ModemManager, update notifiers, SSSD, snapd at boot | `/etc/modprobe.d/disable-camera.conf`, `/etc/udev/rules.d/70-cardreader-off.rules` |
 | Memory/disk | zram swap (zstd), `noatime`, tmpfs `/tmp`, inotify 524288 | `/etc/systemd/zram-generator.conf`, `/etc/fstab`, `/etc/sysctl.d/60-fleet-perf.conf` |
+| Crash recovery | a kernel hang or oops panics, saves a dump, reboots in 10 s; dumps cleared from NVRAM once archived | `/etc/sysctl.d/61-crash-reboot.conf`, `pstore-efi-cleanup.service` |
 | Access | key-only SSH, Tailscale, UFW (tailscale0 + LAN:22) | `/etc/ssh/sshd_config.d/99-hardening.conf` |
 | Toolchain | build-essential, git, gh, tmux, rg, fd, jq, Python, Docker, fnm + Node LTS, uv | |
 | Agents | Claude Code, Codex, opencode; tool PATH above the `.bashrc` interactive guard; `~/jobs`, `~/Code` | `~/.bashrc` |
@@ -115,6 +116,8 @@ Optional: `sudo pro attach <TOKEN> && sudo pro enable esm-apps esm-infra livepat
   password either. Containers don't come back after a reboot.
 - Dev servers on saturn are reachable from the laptop at `saturn-mbp:<port>`.
 - Keep job files in `~/jobs`. `/tmp` is RAM and is wiped on every boot.
+- If it hangs, it reboots itself within about 40 s. Crash dumps land in
+  `/var/lib/systemd/pstore/` (see `TROUBLESHOOTING.md`).
 - To hand work over, add `saturn` as an SSH environment in T3 Code, or run
   `ssh saturn 'bash -ls'` with a `claude --bg` or tmux + `claude -p` heredoc
   (see `FLEET.md`).
