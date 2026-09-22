@@ -21,7 +21,7 @@ Boot parameters come first because they are foundational and only take effect on
 reboot. Then configure the **hardware**, while you still have local access and before
 the box goes headless. **Remote access comes next**, so the final reboot can be done
 and recovered remotely. **Workload tooling comes last**. A single reboot at the end
-applies the GRUB parameters, dGPU blacklist, initramfs, and logind changes.
+applies the GRUB parameters, dGPU power-off, initramfs, and logind changes.
 
 ```
 Phase 0  Preflight        read-only: identify box, collect inputs, driver sanity
@@ -92,21 +92,79 @@ rm -rf /var/lib/apt/lists/* && apt-get update      # only if apt is broken
 apt-get install -y iw mbpfan
 ```
 
-### 2.1 Disable the AMD dGPU (use the Intel iGPU only)
+### 2.1 Power off the AMD dGPU through the gmux
 
-The AMD R9 M370X has no working runtime PM (`amdgpu: Runtime PM not available`) and
-the indexed gmux does **not** let Linux cut its power rail. Keep the driver from
-binding so only the iGPU is used. Do **not** rely on the `gpu-power-prefs` EFI
-variable — Apple's firmware clears it on reboot.
+The R9 M370X has no PX runtime PM (`amdgpu: Runtime PM not available`), but the
+indexed gmux can still cut its power rail: `apple-gmux` exposes that through
+`vga_switcheroo`, and since kernel 6.4 `amdgpu` registers a switcheroo client on
+gmux Macs. So bind the card to `amdgpu` (Cape Verde needs `si_support=1`) and let a
+oneshot unit switch it off a few seconds into boot. Blacklisting the driver instead
+leaves the card in D0 with no power interface at all — roughly 10 W and a hotter
+chassis for nothing. Do **not** rely on the `gpu-power-prefs` EFI variable: it only
+picks the boot GPU, and Apple's firmware clears it on reboot anyway.
 
 ```bash
 cat > /etc/modprobe.d/blacklist-amdgpu.conf <<'EOF'
-# MacBookPro11,x: disable AMD dGPU, use Intel iGPU only
+# MacBookPro11,5: bind the R9 M370X to amdgpu (Cape Verde = SI) so it registers a
+# vga_switcheroo client; dgpu-off.service then cuts its power through the gmux.
 blacklist radeon
-blacklist amdgpu
+options radeon si_support=0
+options amdgpu si_support=1
+EOF
+
+cat > /usr/local/sbin/dgpu-off <<'EOF'
+#!/bin/sh
+# Power off the AMD dGPU through the gmux once amdgpu has registered with vga_switcheroo.
+SW=/sys/kernel/debug/vgaswitcheroo/switch
+mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug
+for i in $(seq 1 60); do [ -e "$SW" ] && break; sleep 0.5; done
+[ -e "$SW" ] || { echo "vgaswitcheroo switch never appeared" >&2; exit 1; }
+grep -q '^2:DIS: :Off' "$SW" 2>/dev/null && { echo "dGPU already off"; exit 0; }
+echo IGD > "$SW"
+echo OFF > "$SW"
+sleep 1
+grep 'DIS:' "$SW"
+EOF
+chmod +x /usr/local/sbin/dgpu-off
+
+cat > /etc/systemd/system/dgpu-off.service <<'EOF'
+[Unit]
+Description=Power off AMD dGPU via apple-gmux (vga_switcheroo)
+After=systemd-modules-load.service
+DefaultDependencies=no
+Before=multi-user.target display-manager.service gdm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/dgpu-off
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable dgpu-off.service
+
+# Hide the dGPU from GNOME Shell and the seat (72 runs after 71-seat.rules adds the tags)
+cat > /etc/udev/rules.d/72-dgpu-ignore.rules <<'EOF'
+# MacBookPro11,5: dgpu-off.service cuts the AMD dGPU's power at boot. Keep the desktop
+# from ever opening it, or GNOME Shell may pick it as primary GPU and hang when it vanishes.
+SUBSYSTEM=="drm", KERNELS=="0000:01:00.0", TAG+="mutter-device-ignore", TAG-="seat", TAG-="master-of-seat", TAG-="uaccess"
 EOF
 update-initramfs -u        # takes effect on the Phase 5 reboot
 ```
+
+After the reboot `cat /sys/kernel/debug/vgaswitcheroo/switch` must show
+`2:DIS: :Off:0000:01:00.0` and `/sys/bus/pci/devices/0000:01:00.0/power_state`
+reads `D3hot`. Measured on saturn at idle: fans 3500 → 2150 rpm, package 67 → 59 °C.
+The `EDID err ... eDP-2` lines amdgpu logs at boot are harmless — the gmux never
+routes the panel to the dGPU.
+
+Both the udev rule and `Before=gdm.service` are required. amdgpu finishes init about
+7 s into boot, right as GDM starts; without them GNOME Shell sometimes grabs the dGPU
+as its primary GPU, the power cut pulls it away, and the boot hangs
+(`MESA: error: amdgpu: Failed to allocate a buffer`, then `ring sdma0 timeout`).
+On saturn that was 3 of 5 boots. Check with
+`journalctl -b | grep 'selected primary'` — it must name `card1` (i915).
 
 ### 2.2 Fan control
 
@@ -228,8 +286,8 @@ rm /etc/udev/rules.d/70-cardreader-off.rules && echo 1 > /sys/bus/usb/devices/2-
 
 Deliberately **not** touched: SATA ALPM (`max_performance`) and PCIe ASPM
 (`default`). They save only ~1-2 W and risk I/O instability on a remote box with
-no physical access — not worth it. The dGPU is the dominant draw and cannot be
-parked on 11,x (see 2.1 and Gotchas).
+no physical access — not worth it. The dGPU is the dominant draw; 2.1 powers it
+off through the gmux.
 
 ### 2.6 Disable unused services (printing, modem, update notifiers)
 
@@ -251,7 +309,7 @@ Re-enable any with `systemctl enable --now <unit>`. Deliberately **kept**:
 `snapd` (only needed if you use the desktop/Firefox snaps). `avahi-daemon` is
 left running too — it is tiny and `cups-browsed` was its only consumer.
 
-**Phase 2 verify:** iGPU drives the panel, dGPU has no driver, fans active,
+**Phase 2 verify:** iGPU drives the panel, `dgpu-off.service` active, fans active,
 `iw reg get` shows your country, Wi-Fi power-save off (`iw dev <if> get power_save`),
 sleep targets masked, Bluetooth soft-blocked, `uvcvideo` not loaded,
 `sdb`/card reader gone (`lsblk`), and `cups`/`ModemManager`/`motd-news.timer`
@@ -438,7 +496,7 @@ systemctl stop gdm
 
 ## Phase 5 — Reboot + verify
 
-Reboot now to apply the GRUB parameters, dGPU blacklist, initramfs, logind and
+Reboot now to apply the GRUB parameters, dGPU power-off, initramfs, logind and
 desktop/toggle changes.
 
 ```bash
@@ -450,7 +508,8 @@ After it comes back:
 ```bash
 cat /proc/cmdline                            # expect libata.force=noncq intel_iommu=off
 lspci -k | grep -A2 -E 'VGA|Network'
-lsmod | grep -E 'amdgpu|radeon' || echo "dGPU drivers not loaded (good)"
+cat /sys/kernel/debug/vgaswitcheroo/switch   # 2:DIS: :Off:0000:01:00.0
+cat /sys/bus/pci/devices/0000:01:00.0/power_state   # D3hot
 cat /sys/class/drm/card1-eDP-1/status        # connected
 systemctl is-active ssh tailscaled docker mbpfan
 systemctl is-active gdm                         # active = GUI on boot (default)
@@ -466,8 +525,13 @@ it survives lid-close. That is the working state.
 
 - **GRUB quirks are mandatory here**: `libata.force=noncq` (Apple SSD NCQ bug) and
   `intel_iommu=off` (Apple DMAR). Set before first boot.
-- **dGPU cannot be powered off.** Blacklist only; it stays at D0. Don't chase it.
-- **`gpu-power-prefs` does not persist** on this firmware.
+- **dGPU power-off needs `amdgpu` bound.** With the driver blacklisted there is no
+  switcheroo client, no `switch` node, and the card sits in D0. Bind it and let
+  `dgpu-off.service` cut the power (2.1).
+- **Keep GNOME Shell off the dGPU.** It races amdgpu at boot and hangs if it picked
+  the card before the power cut. The `72-dgpu-ignore.rules` udev rule plus
+  `Before=gdm.service` on `dgpu-off` prevent it (2.1).
+- **`gpu-power-prefs` does not persist** on this firmware, and would not cut power anyway.
 - **apt can ship a broken `noble/main` index**; re-index if `liberror-perl` is missing.
 - **Disable password auth only after key login is proven.** Keep local access as the
   recovery path (or re-enable passwords with a `sed` on the hardening drop-in).

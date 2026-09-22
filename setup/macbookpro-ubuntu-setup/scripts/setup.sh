@@ -23,7 +23,7 @@
 #   SSH_PUBKEY    public key line to authorize (or use SSH_PUBKEY_FILE)
 #   LAN_CIDR      LAN subnet allowed to SSH (default: none -> Tailscale only)
 #   COUNTRY       2-letter Wi-Fi country code (default: skip reg-domain step)
-#   SKIP_DGPU=1   do not blacklist the AMD dGPU
+#   SKIP_DGPU=1   do not set up the AMD dGPU power-off
 #   SKIP_GRUB=1   do not touch GRUB cmdline
 #   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
 #   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader
@@ -90,15 +90,53 @@ apt-get update
 apt-get install -y iw mbpfan
 
 if [ "$SKIP_DGPU" != "1" ] && [ "$IS_MAC" = "1" ]; then
-  log "  2.1 disabling AMD dGPU (iGPU-only)"
+  log "  2.1 AMD dGPU: bind to amdgpu, power off through the gmux at boot"
   cat > /etc/modprobe.d/blacklist-amdgpu.conf <<'EOF'
-# MacBookPro11,x: disable AMD dGPU, use Intel iGPU only
+# MacBookPro11,5: bind the R9 M370X to amdgpu (Cape Verde = SI) so it registers a
+# vga_switcheroo client; dgpu-off.service then cuts its power through the gmux.
 blacklist radeon
-blacklist amdgpu
+options radeon si_support=0
+options amdgpu si_support=1
+EOF
+  cat > /usr/local/sbin/dgpu-off <<'EOF'
+#!/bin/sh
+# Power off the AMD dGPU through the gmux once amdgpu has registered with vga_switcheroo.
+SW=/sys/kernel/debug/vgaswitcheroo/switch
+mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug
+for i in $(seq 1 60); do [ -e "$SW" ] && break; sleep 0.5; done
+[ -e "$SW" ] || { echo "vgaswitcheroo switch never appeared" >&2; exit 1; }
+grep -q '^2:DIS: :Off' "$SW" 2>/dev/null && { echo "dGPU already off"; exit 0; }
+echo IGD > "$SW"
+echo OFF > "$SW"
+sleep 1
+grep 'DIS:' "$SW"
+EOF
+  chmod +x /usr/local/sbin/dgpu-off
+  cat > /etc/systemd/system/dgpu-off.service <<'EOF'
+[Unit]
+Description=Power off AMD dGPU via apple-gmux (vga_switcheroo)
+After=systemd-modules-load.service
+DefaultDependencies=no
+Before=multi-user.target display-manager.service gdm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/dgpu-off
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable dgpu-off.service
+  cat > /etc/udev/rules.d/72-dgpu-ignore.rules <<'EOF'
+# MacBookPro11,5: dgpu-off.service cuts the AMD dGPU's power at boot. Keep the desktop
+# from ever opening it, or GNOME Shell may pick it as primary GPU and hang when it vanishes.
+SUBSYSTEM=="drm", KERNELS=="0000:01:00.0", TAG+="mutter-device-ignore", TAG-="seat", TAG-="master-of-seat", TAG-="uaccess"
 EOF
   update-initramfs -u
 else
-  warn "skipping dGPU blacklist"
+  warn "skipping dGPU power-off"
 fi
 
 log "  2.2 fan control (mbpfan)"
@@ -346,10 +384,10 @@ printf '  wifi        : power_save=%s (NM wifi.powersave=%s)\n' \
   "$(grep -h '^wifi.powersave' /etc/NetworkManager/conf.d/99-wifi-powersave.conf 2>/dev/null | awk -F= '{gsub(/ /,"",$2); print $2}')"
 printf '  mbpfan      : %s\n' "$(systemctl is-active mbpfan)"
 printf '  ufw         : %s\n' "$(ufw status | head -1)"
-printf '  dGPU driver : %s (0 = disabled)\n' "$(lsmod | grep -cE 'amdgpu|radeon')"
+printf '  dgpu-off    : %s (powers the dGPU off after reboot)\n' "$(systemctl is-enabled dgpu-off 2>/dev/null || echo skipped)"
 echo
 echo "MANUAL FOLLOW-UPS:"
 echo "  1. sudo tailscale up            # authenticate, note the 100.x IP"
 echo "  2. verify key login from client, then disable password auth (see above)"
 echo "  3. sudo pro attach <TOKEN> && sudo pro enable esm-apps esm-infra livepatch"
-echo "  4. reboot to apply GRUB + dGPU blacklist + initramfs + logind changes"
+echo "  4. reboot to apply GRUB + dGPU power-off + initramfs + logind changes"
