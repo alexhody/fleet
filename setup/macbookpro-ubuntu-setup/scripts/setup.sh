@@ -40,6 +40,18 @@ set -euo pipefail
 log()  { printf '\n==> %s\n' "$*"; }
 warn() { printf 'WARN: %s\n' "$*" >&2; }
 
+# install_sudoers <name>: validate the rule on stdin, then install it to /etc/sudoers.d.
+install_sudoers() {
+  local tmp; tmp="$(mktemp)"
+  cat > "$tmp"
+  if visudo -cf "$tmp" >/dev/null; then
+    install -m 0440 -o root -g root "$tmp" "/etc/sudoers.d/$1"
+  else
+    warn "sudoers rule $1 failed validation; its commands will ask for a password"
+  fi
+  rm -f "$tmp"
+}
+
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run as root (sudo)." >&2
   exit 1
@@ -376,6 +388,12 @@ alias oc='"'"'opencode'"'"'
 alias c='"'"'clear'"'"'
 EOF' || warn "could not write $ADMIN_USER docker aliases"
 
+install_sudoers docker-toggles <<EOF
+# dockeron/dockeroff (~/.bash_aliases) toggle Docker without a password prompt.
+$ADMIN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl enable --now containerd docker docker.socket, \\
+    /usr/bin/systemctl disable --now docker.socket docker containerd
+EOF
+
 log "  4.2 Node (fnm) + uv for $ADMIN_USER"
 sudo -u "$ADMIN_USER" -H bash -lc '
   set -e
@@ -469,19 +487,12 @@ alias dstat='"'"'systemctl is-active gdm'"'"'
 EOF' || warn "could not write $ADMIN_USER shell aliases"
 
 # Let don/doff run without a password: only their exact commands, never a shell.
-SUDOERS_TMP="$(mktemp)"
-cat > "$SUDOERS_TMP" <<EOF
+install_sudoers desktop-toggles <<EOF
 # don/doff (~/.bash_aliases) toggle the desktop without a password prompt.
 $ADMIN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start gdm, /usr/bin/systemctl stop gdm, \\
     /usr/bin/systemctl start snapd.socket snapd.service, /usr/bin/systemctl stop snapd.service snapd.socket, \\
     /usr/bin/tee /sys/class/backlight/gmux_backlight/bl_power, /usr/bin/tee /sys/class/backlight/gmux_backlight/brightness
 EOF
-if visudo -cf "$SUDOERS_TMP" >/dev/null; then
-  install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/desktop-toggles
-else
-  warn "desktop-toggles sudoers rule failed validation; don/doff will ask for a password"
-fi
-rm -f "$SUDOERS_TMP"
 
 if [ "$HEADLESS" = "1" ]; then
   log "  4.4 headless boot (no GUI): multi-user.target, GDM removed from boot"
