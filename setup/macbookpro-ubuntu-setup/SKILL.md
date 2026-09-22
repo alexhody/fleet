@@ -1,6 +1,6 @@
 ---
 name: macbookpro-ubuntu-setup
-description: Use ONLY when provisioning a freshly installed Ubuntu on an Apple MacBook Pro (MacBookPro11,x, e.g. 11,5) for headless remote agentic-coding use. Covers required GRUB kernel parameters, Apple driver checks, disabling the AMD dGPU (iGPU-only), key-only SSH, Tailscale, no-sleep/lid handling, dev toolchain, mbpfan, UFW hardening, the Wi-Fi regulatory domain and Wi-Fi power-save, turning off unused devices (Bluetooth, FaceTime camera, SD card reader) and unused services (CUPS printing, ModemManager, update-notifier/motd-news), and installing Docker but leaving it off on demand. Trigger on "fresh Ubuntu on MacBook Pro", "set up this MacBook", "SSH into the Ubuntu MacBook", "turn off Bluetooth/camera/SD reader", "disable CUPS/ModemManager", "turn off Wi-Fi power-save", "enable/disable Docker on the MacBook".
+description: Use ONLY when provisioning a freshly installed Ubuntu on an Apple MacBook Pro (MacBookPro11,x, e.g. 11,5) for headless remote agentic-coding use. Covers required GRUB kernel parameters, Apple driver checks, powering off the AMD dGPU through the gmux (iGPU-only, and keeping GNOME Shell off it so boot does not hang), key-only SSH, Tailscale, no-sleep/lid handling, dev toolchain, mbpfan, UFW hardening, the Wi-Fi regulatory domain and Wi-Fi power-save, turning off unused devices (Bluetooth, FaceTime camera, SD card reader) and unused services (CUPS printing, ModemManager, update-notifier/motd-news), zram swap, noatime, tmpfs /tmp and inotify limits, the kernel-7.0 SSD write-size cap, and installing Docker but leaving it off on demand. Trigger on "fresh Ubuntu on MacBook Pro", "set up this MacBook", "SSH into the Ubuntu MacBook", "turn off Bluetooth/camera/SD reader", "disable CUPS/ModemManager", "turn off Wi-Fi power-save", "enable/disable Docker on the MacBook", "power off the dGPU", "boot hangs after dGPU change".
 ---
 
 # Fresh Ubuntu on a MacBook Pro -> remote agentic-coding box
@@ -25,9 +25,9 @@ applies the GRUB parameters, dGPU power-off, initramfs, and logind changes.
 
 ```
 Phase 0  Preflight        read-only: identify box, collect inputs, driver sanity
-Phase 1  Boot parameters  GRUB cmdline quirks (SSD NCQ, IOMMU)             <-- first
+Phase 1  Boot parameters  GRUB cmdline quirks (SSD NCQ, IOMMU), SSD write cap <-- first
 Phase 2  Hardware         dGPU off, fans, Wi-Fi reg domain, power/sleep,
-                          unused devices + services off
+                          unused devices + services off, zram/noatime/tmpfs
 Phase 3  Remote access    base pkgs, key-only SSH, Tailscale, UFW
 Phase 4  Workload         dev toolchain, Docker (off on demand), Node/uv,
                           GUI-on-boot + don/doff toggles (HEADLESS=1 = no GUI)
@@ -68,9 +68,12 @@ the first reboot:
 - `intel_iommu=off` — Apple's DMAR/IOMMU tables are unreliable; disabling avoids
   boot/DMA problems.
 
+`splash` is left out on purpose: `plymouth-quit-wait` holds boot until GDM takes
+over, which cost 24 s of a 32 s boot on saturn. Without it boot takes about 11 s.
+
 ```bash
 cp /etc/default/grub /etc/default/grub.bak
-sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet splash libata.force=noncq intel_iommu=off"|' /etc/default/grub
+sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet libata.force=noncq intel_iommu=off"|' /etc/default/grub
 update-grub
 grep GRUB_CMDLINE_LINUX_DEFAULT /etc/default/grub   # verify
 ```
@@ -79,6 +82,30 @@ Trade-off to note: `intel_iommu=off` disables VT-d, which weakens DMA-attack
 protection and blocks PCI/GPU passthrough. Acceptable for a coding box; re-enable if
 you later need VFIO/passthrough. Takes effect on the Phase 5 reboot; confirm with
 `cat /proc/cmdline`.
+
+### 1.1 SSD write-size cap (kernel 7.0+)
+
+Kernel 7.0 raised the default maximum I/O size from 1280 KiB to 4 MiB (block commit
+`9b8b84879d4a`). The Apple SSD (Samsung `144d:a801` controller, firmware `BXW1SA0Q`)
+cannot take it: sustained writes throw `host bus error` and the root filesystem goes
+read-only. A linux-ide report on a MacBookPro11,4 hit this after ~28 GB written in
+one boot. The upstream quirk is not merged, so cap the I/O size yourself.
+
+`libata.force=max_sec=2560` would do it, but libata applies only the **first**
+`force` entry that matches a device, so `noncq,max_sec=2560` silently drops
+`max_sec`. Use a udev rule instead:
+
+```bash
+cat > /etc/udev/rules.d/60-apple-ssd-max-sectors.rules <<'EOF'
+# Apple SSD SM0xxxG (firmware BXW1SA0Q) throws host bus errors and drops the root fs
+# read-only on writes over 1280 KiB since kernel 7.0 raised the default to 4 MiB.
+# libata.force=max_sec=2560 cannot be combined with noncq (only the first entry applies).
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]", ATTRS{model}=="APPLE SSD SM0*", ATTR{queue/max_sectors_kb}="1280"
+EOF
+udevadm control --reload
+udevadm trigger --action=change --subsystem-match=block --sysname-match=sda
+cat /sys/block/sda/queue/max_sectors_kb   # 1280
+```
 
 ## Phase 2 — Hardware
 
@@ -309,11 +336,54 @@ Re-enable any with `systemctl enable --now <unit>`. Deliberately **kept**:
 `snapd` (only needed if you use the desktop/Firefox snaps). `avahi-daemon` is
 left running too — it is tiny and `cups-browsed` was its only consumer.
 
+### 2.7 Memory, disk and file-watch tuning
+
+The SSD runs at queue depth 1 (NCQ off), so every write and every swap-in is
+expensive. Move swap and scratch files to RAM and stop needless metadata writes:
+
+- **zram swap** (zstd, up to 8 GB) ahead of the 4 GB `/swap.img`, which stays as a
+  last resort. Keeps the box responsive when tsc, node and jest spike together.
+- **`noatime`** on `/`: no inode write on every file read.
+- **tmpfs `/tmp`**: build scratch in RAM; only used pages count against memory.
+- **inotify limits**: the default 65536 watches make file watchers fail silently
+  on large repos.
+
+```bash
+apt-get install -y systemd-zram-generator
+cat > /etc/systemd/zram-generator.conf <<'EOF'
+# Compressed RAM swap; the 4 GB /swap.img stays as a low-priority last resort.
+[zram0]
+zram-size = min(ram / 2, 8192)
+compression-algorithm = zstd
+swap-priority = 100
+EOF
+
+cp /etc/fstab /etc/fstab.bak
+awk '$2=="/" && $3=="ext4" && $4=="defaults" {$4="defaults,noatime"} {print}' OFS='\t' /etc/fstab > /etc/fstab.new && mv /etc/fstab.new /etc/fstab
+cp /usr/share/systemd/tmp.mount /etc/systemd/system/tmp.mount
+systemctl daemon-reload && systemctl enable tmp.mount
+
+cat > /etc/sysctl.d/60-fleet-perf.conf <<'EOF'
+# zram swap is far cheaper than the disk, so prefer it over dropping page cache.
+vm.swappiness = 180
+# zram has no seek cost; read-ahead of neighbouring swap pages only wastes work.
+vm.page-cluster = 0
+# File watchers (node, vite, tsc) fail silently on large repos at the default 65536.
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 1024
+EOF
+sysctl -p /etc/sysctl.d/60-fleet-perf.conf
+```
+
+zram, `noatime` and tmpfs `/tmp` take effect on the Phase 5 reboot. `/tmp` is
+emptied on every boot (it already was by `systemd-tmpfiles`), so keep job files in
+`~/jobs`, not `/tmp`.
+
 **Phase 2 verify:** iGPU drives the panel, `dgpu-off.service` active, fans active,
 `iw reg get` shows your country, Wi-Fi power-save off (`iw dev <if> get power_save`),
 sleep targets masked, Bluetooth soft-blocked, `uvcvideo` not loaded,
-`sdb`/card reader gone (`lsblk`), and `cups`/`ModemManager`/`motd-news.timer`
-inactive.
+`sdb`/card reader gone (`lsblk`), `cups`/`ModemManager`/`motd-news.timer`
+inactive, SSD `max_sectors_kb` = 1280, and inotify watches = 524288.
 
 ## Phase 3 — Remote access
 
@@ -506,7 +576,11 @@ reboot
 After it comes back:
 
 ```bash
-cat /proc/cmdline                            # expect libata.force=noncq intel_iommu=off
+cat /proc/cmdline                            # expect quiet libata.force=noncq intel_iommu=off
+cat /sys/block/sda/queue/max_sectors_kb      # 1280
+swapon --show                                # /dev/zram0 prio 100, /swap.img prio -1
+findmnt -no FSTYPE /tmp; findmnt -no OPTIONS /   # tmpfs; rw,noatime
+systemd-analyze | head -1                    # ~11 s without splash
 lspci -k | grep -A2 -E 'VGA|Network'
 cat /sys/kernel/debug/vgaswitcheroo/switch   # 2:DIS: :Off:0000:01:00.0
 cat /sys/bus/pci/devices/0000:01:00.0/power_state   # D3hot
@@ -525,6 +599,11 @@ it survives lid-close. That is the working state.
 
 - **GRUB quirks are mandatory here**: `libata.force=noncq` (Apple SSD NCQ bug) and
   `intel_iommu=off` (Apple DMAR). Set before first boot.
+- **`libata.force` applies one entry per device.** The first match wins, so
+  `noncq,max_sec=2560` never applies `max_sec`, and the kernel logs no error — only
+  `FORCE: modified (noncq)`. Cap the SSD's I/O size with the udev rule (1.1).
+- **`splash` costs ~20 s of boot** (32 → 11 s on saturn). `plymouth-quit-wait` blocks until GDM takes over
+  the screen. Leave it off the cmdline on a headless box.
 - **dGPU power-off needs `amdgpu` bound.** With the driver blacklisted there is no
   switcheroo client, no `switch` node, and the card sits in D0. Bind it and let
   `dgpu-off.service` cut the power (2.1).

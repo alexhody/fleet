@@ -2,11 +2,13 @@
 # setup.sh - provision a fresh Ubuntu MacBook Pro as a remote agentic-coding box.
 #
 # Phases (boot params, then hardware, then remote access, then workload):
-#   1. Boot params : GRUB quirks (SSD NCQ, IOMMU) - must precede first reboot
+#   1. Boot params : GRUB quirks (SSD NCQ, IOMMU), SSD write-size cap - must
+#                    precede first reboot
 #   2. Hardware    : apt helpers, dGPU off, fans, Wi-Fi reg domain, Wi-Fi
 #                    power-save off, no-sleep, unused devices off (Bluetooth,
 #                    camera, SD reader) and unused services off (CUPS,
-#                    ModemManager, update notifiers)
+#                    ModemManager, update notifiers), zram swap, noatime,
+#                    tmpfs /tmp, inotify limits
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
 #   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
 #                    GUI-on-boot + don/doff toggles (HEADLESS=1 = no GUI)
@@ -28,6 +30,7 @@
 #   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
 #   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader
 #   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/update-notifier
+#   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
 #   HEADLESS=1    boot to a text console (default: GUI on boot + don/doff toggles)
 #
@@ -54,6 +57,7 @@ SKIP_GRUB="${SKIP_GRUB:-0}"
 SKIP_WIFI_PS="${SKIP_WIFI_PS:-0}"
 SKIP_DEVICES="${SKIP_DEVICES:-0}"
 SKIP_SERVICES="${SKIP_SERVICES:-0}"
+SKIP_TUNING="${SKIP_TUNING:-0}"
 DOCKER_ON="${DOCKER_ON:-0}"
 HEADLESS="${HEADLESS:-0}"
 
@@ -74,11 +78,23 @@ echo "  mac  : $IS_MAC"
 log "Phase 1 - GRUB boot parameters"
 if [ "$SKIP_GRUB" != "1" ] && [ "$IS_MAC" = "1" ]; then
   cp -n /etc/default/grub /etc/default/grub.bak 2>/dev/null || true
-  sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet splash libata.force=noncq intel_iommu=off"|' /etc/default/grub
+  sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet libata.force=noncq intel_iommu=off"|' /etc/default/grub
   update-grub
   echo "  set: $(grep '^GRUB_CMDLINE_LINUX_DEFAULT' /etc/default/grub)"
 else
   warn "skipping GRUB changes"
+fi
+
+if [ "$IS_MAC" = "1" ]; then
+  log "  1.1 SSD write-size cap (1280 KiB, kernel 7.0 regression)"
+  cat > /etc/udev/rules.d/60-apple-ssd-max-sectors.rules <<'EOF'
+# Apple SSD SM0xxxG (firmware BXW1SA0Q) throws host bus errors and drops the root fs
+# read-only on writes over 1280 KiB since kernel 7.0 raised the default to 4 MiB.
+# libata.force=max_sec=2560 cannot be combined with noncq (only the first entry applies).
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]", ATTRS{model}=="APPLE SSD SM0*", ATTR{queue/max_sectors_kb}="1280"
+EOF
+  udevadm control --reload
+  udevadm trigger --action=change --subsystem-match=block --sysname-match=sda
 fi
 
 # ============================================================ PHASE 2: HARDWARE
@@ -240,6 +256,35 @@ else
   warn "skipping unused-service power-off"
 fi
 
+if [ "$SKIP_TUNING" != "1" ]; then
+  log "  2.7 zram swap, noatime, tmpfs /tmp, inotify limits"
+  apt-get install -y systemd-zram-generator
+  cat > /etc/systemd/zram-generator.conf <<'EOF'
+# Compressed RAM swap; the 4 GB /swap.img stays as a low-priority last resort.
+[zram0]
+zram-size = min(ram / 2, 8192)
+compression-algorithm = zstd
+swap-priority = 100
+EOF
+  cp -n /etc/fstab /etc/fstab.bak 2>/dev/null || true
+  awk '$2=="/" && $3=="ext4" && $4=="defaults" {$4="defaults,noatime"} {print}' OFS='\t' /etc/fstab > /etc/fstab.new && mv /etc/fstab.new /etc/fstab
+  cp /usr/share/systemd/tmp.mount /etc/systemd/system/tmp.mount
+  systemctl daemon-reload
+  systemctl enable tmp.mount
+  cat > /etc/sysctl.d/60-fleet-perf.conf <<'EOF'
+# zram swap is far cheaper than the disk, so prefer it over dropping page cache.
+vm.swappiness = 180
+# zram has no seek cost; read-ahead of neighbouring swap pages only wastes work.
+vm.page-cluster = 0
+# File watchers (node, vite, tsc) fail silently on large repos at the default 65536.
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 1024
+EOF
+  sysctl -p /etc/sysctl.d/60-fleet-perf.conf
+else
+  warn "skipping memory/disk tuning"
+fi
+
 # ======================================================= PHASE 3: REMOTE ACCESS
 log "Phase 3 - remote access"
 
@@ -384,10 +429,15 @@ printf '  wifi        : power_save=%s (NM wifi.powersave=%s)\n' \
   "$(grep -h '^wifi.powersave' /etc/NetworkManager/conf.d/99-wifi-powersave.conf 2>/dev/null | awk -F= '{gsub(/ /,"",$2); print $2}')"
 printf '  mbpfan      : %s\n' "$(systemctl is-active mbpfan)"
 printf '  ufw         : %s\n' "$(ufw status | head -1)"
+printf '  ssd cap     : max_sectors_kb=%s (1280 = capped)\n' "$(cat /sys/block/sda/queue/max_sectors_kb 2>/dev/null)"
+printf '  tuning      : zram=%s tmp.mount=%s inotify=%s (zram + /tmp after reboot)\n' \
+  "$([ -f /etc/systemd/zram-generator.conf ] && echo configured || echo skipped)" \
+  "$(systemctl is-enabled tmp.mount 2>/dev/null || echo skipped)" \
+  "$(sysctl -n fs.inotify.max_user_watches)"
 printf '  dgpu-off    : %s (powers the dGPU off after reboot)\n' "$(systemctl is-enabled dgpu-off 2>/dev/null || echo skipped)"
 echo
 echo "MANUAL FOLLOW-UPS:"
 echo "  1. sudo tailscale up            # authenticate, note the 100.x IP"
 echo "  2. verify key login from client, then disable password auth (see above)"
 echo "  3. sudo pro attach <TOKEN> && sudo pro enable esm-apps esm-infra livepatch"
-echo "  4. reboot to apply GRUB + dGPU power-off + initramfs + logind changes"
+echo "  4. reboot to apply GRUB + dGPU power-off + zram + tmpfs /tmp + logind changes"
