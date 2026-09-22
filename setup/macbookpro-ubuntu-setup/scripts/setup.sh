@@ -11,7 +11,8 @@
 #                    tmpfs /tmp, inotify limits
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
 #   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
-#                    GUI-on-boot + don/doff toggles (HEADLESS=1 = no GUI)
+#                    non-interactive-shell PATH, agent CLIs (Claude Code,
+#                    Codex, opencode), GUI-on-boot + don/doff toggles
 #
 # Usage:
 #   sudo ADMIN_USER=saturn \
@@ -306,7 +307,7 @@ fi
 log "Phase 3 - remote access"
 
 log "  3.0 base packages"
-apt-get install -y openssh-server ufw
+apt-get install -y openssh-server ufw curl
 
 log "  3.1 SSH (passwords stay ON until a key is proven)"
 install -d /etc/ssh/sshd_config.d
@@ -327,12 +328,14 @@ if [ -n "$SSH_PUBKEY" ]; then
   chown "$ADMIN_USER:$ADMIN_USER" "$ADMIN_HOME/.ssh/authorized_keys"
   echo "   -> after confirming key login, disable passwords:"
   echo "      sed -i 's/^PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config.d/99-hardening.conf && sshd -t && systemctl restart ssh"
+elif [ -s "$ADMIN_HOME/.ssh/authorized_keys" ]; then
+  echo "   using existing $ADMIN_HOME/.ssh/authorized_keys"
 else
   warn "no SSH_PUBKEY given; add one to $ADMIN_HOME/.ssh/authorized_keys manually"
 fi
 
 log "  3.2 Tailscale"
-apt-get install -y tailscale
+command -v tailscale >/dev/null 2>&1 || curl -fsSL https://tailscale.com/install.sh | sh
 systemctl enable --now tailscaled
 
 log "  3.3 UFW (SSH via Tailscale${LAN_CIDR:+ + $LAN_CIDR})"
@@ -361,6 +364,7 @@ else
 fi
 
 log "  4.1b Docker on-demand helpers"
+grep -q dockeron "$ADMIN_HOME/.bash_aliases" 2>/dev/null || \
 sudo -u "$ADMIN_USER" -H bash -c 'cat >> "$HOME/.bash_aliases" <<'"'"'EOF'"'"'
 # Docker on-demand (installed but off by default)
 dockeron()  { sudo systemctl enable --now containerd docker docker.socket; }
@@ -385,10 +389,60 @@ sudo -u "$ADMIN_USER" -H bash -lc '
   command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
 ' || warn "user tooling step failed; run it manually as $ADMIN_USER"
 
+log "  4.2b PATH for non-interactive shells"
+# Ubuntu's ~/.bashrc returns early for non-interactive shells, so PATH lines
+# appended to it never reach `ssh host cmd` or `bash -lc` - the shells remote
+# agents and control planes use. Put tool paths above that early return.
+BRC="$ADMIN_HOME/.bashrc"
+if [ ! -f "$BRC" ]; then
+  warn "no $BRC; skipping non-interactive PATH step"
+elif grep -q FLEET_PATH_SET "$BRC"; then
+  log "    already present"
+else
+  BLK="$(mktemp)"; NEW="$(mktemp)"
+  cat > "$BLK" <<'FLEETPATH'
+# Tool PATH for every kind of shell. The interactive early-return below hides
+# anything past it from `ssh host cmd` and `bash -lc` - the shells remote
+# agents and control planes use - so tool paths belong here, above it.
+if [ -z "${FLEET_PATH_SET:-}" ]; then
+    export FLEET_PATH_SET=1
+    FNM_DIR="$HOME/.local/share/fnm"
+    for d in "$HOME/.local/bin" "$FNM_DIR" "$FNM_DIR/aliases/default/bin" \
+             "$HOME/.opencode/bin"; do
+        [ -d "$d" ] && PATH="$d:$PATH"
+    done
+    export PATH
+fi
+
+FLEETPATH
+  cp -p "$BRC" "$BRC.bak"
+  awk -v blk="$BLK" '
+    !done && /^# If not running interactively/ {
+      while ((getline line < blk) > 0) print line
+      done = 1
+    }
+    { print }
+    END { if (!done) exit 3 }
+  ' "$BRC" > "$NEW" \
+    && install -m644 -o "$ADMIN_USER" -g "$ADMIN_USER" "$NEW" "$BRC" \
+    || warn "could not locate the interactive guard in $BRC; patch it by hand"
+  rm -f "$BLK" "$NEW"
+fi
+
+log "  4.2c agent CLIs (Claude Code, Codex, opencode) + ~/jobs"
+sudo -u "$ADMIN_USER" -H bash -c '
+  export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
+  command -v claude   >/dev/null 2>&1 || curl -fsSL https://claude.ai/install.sh | bash
+  command -v codex    >/dev/null 2>&1 || curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
+  command -v opencode >/dev/null 2>&1 || curl -fsSL https://opencode.ai/install | bash
+  mkdir -p "$HOME/jobs" "$HOME/Code"
+' || warn "agent CLI install failed; rerun the installers as $ADMIN_USER"
+
 log "  4.3 snapd off at boot + don/doff/dstat toggles"
 # snapd only backs GUI snaps (Firefox, snap-store); don/doff toggle it.
 systemctl disable --now snapd.service snapd.socket 2>/dev/null || true
 
+grep -q 'doff()' "$ADMIN_HOME/.bash_aliases" 2>/dev/null || \
 sudo -u "$ADMIN_USER" -H bash -c 'cat >> "$HOME/.bash_aliases" <<'"'"'EOF'"'"'
 # Desktop session toggles
 unalias don doff 2>/dev/null
@@ -453,8 +507,8 @@ printf '  tuning      : zram=%s tmp.mount=%s inotify=%s (zram + /tmp after reboo
   "$(sysctl -n fs.inotify.max_user_watches)"
 printf '  dgpu-off    : %s (powers the dGPU off after reboot)\n' "$(systemctl is-enabled dgpu-off 2>/dev/null || echo skipped)"
 echo
-echo "MANUAL FOLLOW-UPS:"
+echo "NEXT (see SKILL.md steps 3-5):"
 echo "  1. sudo tailscale up            # authenticate, note the 100.x IP"
-echo "  2. verify key login from client, then disable password auth (see above)"
-echo "  3. sudo pro attach <TOKEN> && sudo pro enable esm-apps esm-infra livepatch"
-echo "  4. reboot to apply GRUB + dGPU power-off + zram + tmpfs /tmp + logind changes"
+echo "  2. verify key login from the client, then disable password auth (see above)"
+echo "  3. reboot, then run scripts/verify.sh from the client"
+echo "  4. log in: claude auth login, codex login --device-auth, opencode auth login, gh auth login"
