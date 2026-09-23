@@ -29,6 +29,8 @@ check thermald     masked "$(systemctl is-enabled thermald 2>/dev/null)"
 # Reading the limit needs root; instead check the battery isn't charging past 80 %.
 bat=/sys/class/power_supply/BAT0
 check charge-limit held "$([ "$(cat $bat/status)" = Charging ] && [ $(( $(cat $bat/charge_now) * 100 / $(cat $bat/charge_full) )) -gt 81 ] && echo charging || echo held)"
+check console-blank 60  "$(cat /sys/module/kernel/parameters/consoleblank)"
+check thunderbolt  D3hot "$(cat /sys/bus/pci/devices/0000:00:01.1/power_state 2>/dev/null)"
 check bluetooth-usb off "$(lsusb | grep -q 05ac:8290 && [ "$(cat /sys/bus/usb/devices/1-8/authorized 2>/dev/null)" = 1 ] && echo on || echo off)"
 check snapd        gone "$(command -v snap >/dev/null && echo present || echo gone)"
 check sleep        masked "$(systemctl is-enabled sleep.target 2>/dev/null)"

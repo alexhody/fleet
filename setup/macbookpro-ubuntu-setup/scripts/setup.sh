@@ -6,7 +6,7 @@
 #                    fallback entry - must precede first reboot
 #   2. Hardware    : apt helpers, dGPU off, fans, battery charge limit, Wi-Fi reg domain, Wi-Fi
 #                    power-save off, no-sleep, unused devices off (Bluetooth,
-#                    camera, SD reader) and unused services off (CUPS,
+#                    camera, SD reader, Thunderbolt) and unused services off (CUPS,
 #                    ModemManager, notifiers, SSSD, snapd, desktop extras), zram, noatime,
 #                    tmpfs /tmp, inotify limits, BBR, thermald off, crash recovery (panic on
 #                    hang, dump to pstore, auto-reboot, NVRAM cleanup)
@@ -31,7 +31,7 @@
 #   SKIP_DGPU=1   do not set up the AMD dGPU power-off
 #   SKIP_GRUB=1   do not touch GRUB cmdline
 #   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
-#   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader
+#   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader/Thunderbolt
 #   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/notifiers/SSSD/snaps/desktop extras
 #   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits, BBR, thermald off
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
@@ -94,7 +94,7 @@ echo "  mac  : $IS_MAC"
 log "Phase 1 - GRUB boot parameters"
 if [ "$SKIP_GRUB" != "1" ] && [ "$IS_MAC" = "1" ]; then
   cp -n /etc/default/grub /etc/default/grub.bak 2>/dev/null || true
-  sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 libata.force=max_sec=2560 intel_iommu=off"|' /etc/default/grub
+  sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 libata.force=max_sec=2560 intel_iommu=off consoleblank=60"|' /etc/default/grub
   # One-boot escape if NCQ ever misbehaves: `grub-reboot noncq-fallback && reboot`
   if ! grep -q noncq-fallback /etc/grub.d/40_custom; then
     BOOT_UUID=$(findmnt -no UUID /boot 2>/dev/null || findmnt -no UUID /)
@@ -336,7 +336,7 @@ sudo -u "$ADMIN_USER" -H bash -lc '
 ' || true
 
 if [ "$SKIP_DEVICES" != "1" ] && [ "$IS_MAC" = "1" ]; then
-  log "  2.5 turning off unused devices (Bluetooth, camera, SD reader)"
+  log "  2.5 turning off unused devices (Bluetooth, camera, SD reader, Thunderbolt)"
   # Bluetooth: stop service + soft-block radio (persists via systemd-rfkill)
   systemctl disable --now bluetooth 2>/dev/null || true
   rfkill block bluetooth 2>/dev/null || true
@@ -359,6 +359,19 @@ if [ "$SKIP_DEVICES" != "1" ] && [ "$IS_MAC" = "1" ]; then
   done
   printf '%s\n' 'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="8406", ATTR{authorized}="0"' \
     > /etc/udev/rules.d/70-cardreader-off.rules
+
+  # Thunderbolt: nothing is plugged in, yet with its driver bound the controller stays
+  # powered and holds the CPU out of deep idle (~2.5 W). Without a driver it may sleep,
+  # and the Mac then cuts its power. The internal USB devices may autosuspend too (a
+  # keypress wakes the keyboard), so the USB controller can sleep.
+  echo "blacklist thunderbolt" > /etc/modprobe.d/thunderbolt-off.conf
+  printf '%s\n' \
+    '# Unused Thunderbolt controller (8086:156c, no driver) and the USB controller (8086:8c31)' \
+    '# may sleep; the internal keyboard/trackpad, Bluetooth and SD reader may autosuspend.' \
+    'ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x8086", ATTR{device}=="0x156c|0x8c31", ATTR{power/control}="auto"' \
+    'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="0274|8290|8406", ATTR{power/control}="auto"' \
+    > /etc/udev/rules.d/71-idle-power.rules
+  update-initramfs -u
   udevadm control --reload-rules
 else
   warn "skipping unused-device power-off"

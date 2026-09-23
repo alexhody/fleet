@@ -49,12 +49,12 @@ What it sets up:
 
 | Area | Result | Files |
 | --- | --- | --- |
-| Boot | `quiet loglevel=3 libata.force=max_sec=2560 intel_iommu=off`, no splash, `noncq-fallback` GRUB entry; text console shows only the login prompt | `/etc/default/grub`, `/etc/grub.d/40_custom`, `/etc/sysctl.d/20-quiet-console.conf` |
+| Boot | `quiet loglevel=3 libata.force=max_sec=2560 intel_iommu=off consoleblank=60`, no splash, `noncq-fallback` GRUB entry; text console shows only the login prompt and blanks the panel after 60 s | `/etc/default/grub`, `/etc/grub.d/40_custom`, `/etc/sysctl.d/20-quiet-console.conf` |
 | SSD | I/O capped at 1280 KiB, NCQ on | `/etc/udev/rules.d/60-apple-ssd-max-sectors.rules` |
 | dGPU | powered off through the gmux at boot, hidden from GNOME | `/etc/modprobe.d/blacklist-amdgpu.conf`, `/usr/local/sbin/dgpu-off`, `dgpu-off.service`, `/etc/udev/rules.d/72-dgpu-ignore.rules` |
 | Thermal/power | mbpfan, `thermald` masked (~18 % faster sustained builds), battery stops charging at 80 %, never sleeps, ignores lid | `/usr/local/sbin/bclm`, `/etc/systemd/logind.conf.d/99-no-sleep.conf` |
 | Wi-Fi | country set, power-save off | `wifi-regdom.service`, `/etc/NetworkManager/conf.d/99-wifi-powersave.conf` |
-| Off | Bluetooth (radio and USB controller), camera, SD reader, CUPS, ModemManager, update notifiers, SSSD, colord, avahi, rsyslog, remote desktop, firmware update checks, boot wait for Wi-Fi | `/etc/modprobe.d/disable-camera.conf`, `/etc/udev/rules.d/70-{cardreader,bluetooth}-off.rules` |
+| Off | Bluetooth (radio and USB controller), camera, SD reader, Thunderbolt (powered down; internal USB devices autosuspend), CUPS, ModemManager, update notifiers, SSSD, colord, avahi, rsyslog, remote desktop, firmware update checks, boot wait for Wi-Fi | `/etc/modprobe.d/{disable-camera,thunderbolt-off}.conf`, `/etc/udev/rules.d/70-{cardreader,bluetooth}-off.rules`, `/etc/udev/rules.d/71-idle-power.rules` |
 | Removed | snapd and every snap (Firefox, Snap Store, …), pinned so apt can't reinstall it (Chrome from apt is unaffected); apport | `/etc/apt/preferences.d/no-snapd` |
 | Memory/disk/net | zram swap (zstd), `noatime`, tmpfs `/tmp`, inotify 524288, BBR + `fq` | `/etc/systemd/zram-generator.conf`, `/etc/fstab`, `/etc/sysctl.d/60-fleet-perf.conf` |
 | Crash recovery | a kernel hang or oops panics, saves a dump, reboots in 10 s; dumps cleared from NVRAM once archived | `/etc/sysctl.d/61-crash-reboot.conf`, `pstore-efi-cleanup.service` |

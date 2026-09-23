@@ -189,6 +189,8 @@ ssh saturn 'bash -lic "command -v node"'        # interactive: path in fnm_multi
 | need a snap app (e.g. Chromium) | snapd is removed and pinned out | `sudo rm /etc/apt/preferences.d/no-snapd && sudo apt install snapd` |
 | `saturn-mbp.local` doesn't resolve | avahi (mDNS) is masked | use the Tailscale name, or `sudo systemctl unmask --now avahi-daemon.socket avahi-daemon.service` |
 | no GUI at the panel | it boots to a text console | `don` |
+| panel is dark | the console blanks after 60 s idle | press a key |
+| Thunderbolt device not detected | the controller is powered down | undo below, then reboot |
 | `don`/`doff`/`dockeron`/`dockeroff` ask for a password | sudoers rule missing, or the functions differ from the rule (it matches exact commands) | `sudo -l` must list them (`/etc/sudoers.d/desktop-toggles`, `docker-toggles`); re-run setup |
 | files in `/tmp` vanished | tmpfs, wiped on boot | use `~/jobs` |
 | apt fails on `liberror-perl` | broken `noble/main` index | `sudo rm -rf /var/lib/apt/lists/* && sudo apt-get update` |
@@ -202,6 +204,9 @@ sudo rm /etc/udev/rules.d/70-bluetooth-off.rules
 sudo systemctl enable --now bluetooth && sudo rfkill unblock bluetooth
 # Camera
 sudo rm /etc/modprobe.d/disable-camera.conf
+# Thunderbolt and USB autosuspend (reboot after)
+sudo rm /etc/modprobe.d/thunderbolt-off.conf /etc/udev/rules.d/71-idle-power.rules && sudo update-initramfs -u
+# Console blanking: remove consoleblank=60 from /etc/default/grub, then sudo update-grub
 # SD reader (the port may differ: lsusb | grep 05ac:8406)
 sudo rm /etc/udev/rules.d/70-cardreader-off.rules && echo 1 | sudo tee /sys/bus/usb/devices/2-4/authorized
 # CUPS, ModemManager, notifiers
