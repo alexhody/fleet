@@ -4,8 +4,8 @@
 # Phases (boot params, then hardware, then remote access, then workload):
 #   1. Boot params : GRUB quirks (SSD write-size cap, IOMMU), NCQ on, noncq
 #                    fallback entry - must precede first reboot
-#   2. Hardware    : apt helpers, dGPU off, fans, battery charge limit, Wi-Fi reg domain, Wi-Fi
-#                    power-save off, no-sleep, unused devices off (Bluetooth,
+#   2. Hardware    : apt helpers, dGPU off, fans, battery charge limit, CPU undervolt, Wi-Fi
+#                    reg domain, Wi-Fi power-save off, no-sleep, unused devices off (Bluetooth,
 #                    camera, SD reader, Thunderbolt) and unused services off (CUPS,
 #                    ModemManager, notifiers, SSSD, snapd, desktop extras), zram, noatime,
 #                    tmpfs /tmp, inotify limits, BBR, thermald off, crash recovery (panic on
@@ -28,6 +28,7 @@
 #   LAN_CIDR      LAN subnet allowed to SSH (default: none -> Tailscale only)
 #   COUNTRY       2-letter Wi-Fi country code (default: skip reg-domain step)
 #   CHARGE_LIMIT  stop charging the battery at this % (default 80; 100 = no limit)
+#   UNDERVOLT_MV  CPU voltage offset in mV (default -65; 0 = stock)
 #   SKIP_DGPU=1   do not set up the AMD dGPU power-off
 #   SKIP_GRUB=1   do not touch GRUB cmdline
 #   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
@@ -68,6 +69,7 @@ ADMIN_HOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
 LAN_CIDR="${LAN_CIDR:-}"
 COUNTRY="${COUNTRY:-}"
 CHARGE_LIMIT="${CHARGE_LIMIT:-80}"
+UNDERVOLT_MV="${UNDERVOLT_MV:--65}"
 SKIP_DGPU="${SKIP_DGPU:-0}"
 SKIP_GRUB="${SKIP_GRUB:-0}"
 SKIP_WIFI_PS="${SKIP_WIFI_PS:-0}"
@@ -136,7 +138,7 @@ log "Phase 2 - hardware"
 log "  2.0 apt reindex + hardware helpers"
 rm -rf /var/lib/apt/lists/*
 apt-get update
-apt-get install -y iw mbpfan
+apt-get install -y iw mbpfan msr-tools
 
 if [ "$SKIP_DGPU" != "1" ] && [ "$IS_MAC" = "1" ]; then
   log "  2.1 AMD dGPU: bind to amdgpu, power off through the gmux at boot"
@@ -285,6 +287,68 @@ EOF
   systemctl stop mbpfan
   systemctl restart battery-limit.service || warn "could not set the charge limit"
   systemctl start mbpfan
+fi
+
+if [ "$IS_MAC" = "1" ] && [ "$UNDERVOLT_MV" != "0" ]; then
+  log "  2.2c CPU undervolt ${UNDERVOLT_MV} mV"
+  # The CPU runs at its 100 C limit under load. Less voltage means less heat, so it holds
+  # a higher clock there: -75 mV passed 2 h of mprime and bit-identical builds; -65 keeps
+  # a margin. Writes to the voltage MSR are allowed without a kernel warning.
+  echo "options msr allow_writes=on" > /etc/modprobe.d/msr-writes.conf
+  cat > /usr/local/sbin/undervolt <<'EOF'
+#!/bin/bash
+# Read or set the CPU voltage offset (MSR 0x150) on Haswell. Core and cache share one
+# rail, so both get the same offset. The offset resets on every reboot.
+# Usage: undervolt          print the offset in mV
+#        undervolt -65      set it
+#        undervolt boot -65 set it at boot, unless the last boot crashed while undervolted
+#        undervolt stop     mark a clean shutdown
+set -e
+FLAG=/var/lib/undervolt/active
+modprobe msr
+get() {
+  wrmsr -p0 0x150 0x8000001000000000
+  local o=$(( (0x$(rdmsr -p0 0x150) >> 21) & 0x7ff ))
+  [ $o -ge 1024 ] && o=$((o - 2048))
+  echo $(( (o * 1000 - 512) / 1024 ))
+}
+set_mv() {
+  [ "$1" -le 0 ] && [ "$1" -ge -100 ] || { echo "offset must be -100 to 0 mV" >&2; exit 1; }
+  local o=0 p
+  [ "$1" -ne 0 ] && o=$(( ($1 * 1024 - 500) / 1000 ))
+  for p in 0 2; do wrmsr -a 0x150 "$(printf '0x80000%d11%08x' $p $(( (o & 0x7ff) << 21 )))"; done
+}
+case "${1:-}" in
+  "") get ;;
+  boot)
+    # The flag is removed on a clean shutdown. If it's still here, the last boot ended in
+    # a crash while undervolted: stay at stock this once, so a bad offset can't loop.
+    if [ -e $FLAG ]; then
+      rm -f $FLAG; echo "last boot crashed while undervolted; staying at stock"
+    else
+      set_mv "$2"; mkdir -p ${FLAG%/*}; get | tee $FLAG; sync
+    fi ;;
+  stop) rm -f $FLAG ;;
+  *) set_mv "$1"; get ;;
+esac
+EOF
+  chmod 755 /usr/local/sbin/undervolt
+  cat > /etc/systemd/system/undervolt.service <<EOF
+[Unit]
+Description=Undervolt the CPU by ${UNDERVOLT_MV} mV
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/undervolt boot ${UNDERVOLT_MV}
+ExecStop=/usr/local/sbin/undervolt stop
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable undervolt.service
+  systemctl restart undervolt.service || warn "could not set the undervolt"
 fi
 
 if [ -n "$COUNTRY" ]; then

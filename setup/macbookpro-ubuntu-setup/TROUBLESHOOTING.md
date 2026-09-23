@@ -142,7 +142,20 @@ To stop the automatic reboots (for example, to read a panic on screen):
 
 Test the whole chain (it crashes saturn on purpose):
 `sudo sh -c 'sync; echo c > /proc/sysrq-trigger'`. It should be back over SSH in
-about 40 s, with a new dump in `/var/lib/systemd/pstore/` and `verify.sh` all `ok`.
+about 40 s, with a new dump in `/var/lib/systemd/pstore/`. `verify.sh` is all `ok`
+except `undervolt`: the boot after a crash runs at stock voltage (next section).
+
+### Crashes, failed builds or wrong results since the undervolt
+
+The CPU runs 65 mV under stock (`undervolt.service`). -75 mV passed 2 hours of
+mprime with bit-identical builds, so -65 has a margin, but a chip can drift with age.
+
+- After any crash, the next boot stays at stock once (`journalctl -b -u undervolt`
+  says so, and `verify.sh` fails `undervolt`). The boot after that undervolts again.
+- To test whether it's the cause, run at stock: `sudo undervolt 0` (until reboot),
+  or `sudo systemctl disable undervolt` (stays off).
+- To back off for good, re-run setup with `UNDERVOLT_MV=-50`, or edit the value in
+  `/etc/systemd/system/undervolt.service`, then `sudo systemctl daemon-reload` and reboot.
 
 ## Access
 
@@ -219,6 +232,8 @@ sudo apt install apport
 sudo systemctl enable NetworkManager-wait-online.service
 # SSSD (only if you join a company/LDAP domain)
 sudo systemctl unmask sssd.service sssd-{nss,autofs,pac,pam,pam-priv,ssh,sudo}.socket
+# CPU undervolt (sudo undervolt prints the offset)
+sudo systemctl disable --now undervolt && sudo undervolt 0
 # Battery charge limit (sudo bclm prints the current one)
 sudo systemctl disable --now battery-limit && sudo bclm 100
 # Wi-Fi power-save back on (battery over latency)
@@ -261,5 +276,8 @@ GDM logs `saturn` in automatically either way (`/etc/gdm3/custom.conf`).
   draining down to 80. An SMC reset (Shift+Ctrl+Option+Power) or a battery unplug
   puts the limit back to 100 until the next boot, when `battery-limit.service` sets
   it again (or run `sudo bclm 80`).
+- The CPU is undervolted by 65 mV. Every write to its voltage register marks the
+  kernel tainted (`/proc/sys/kernel/tainted` is 4), which only matters when
+  reporting kernel bugs: reproduce them with `UNDERVOLT_MV=0` first.
 - The `gpu-power-prefs` EFI variable doesn't help. Firmware clears it, and it
   only picks the boot GPU.

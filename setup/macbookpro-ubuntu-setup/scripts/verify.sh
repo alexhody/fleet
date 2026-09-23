@@ -27,6 +27,8 @@ check failed-units 0    "$(systemctl --failed --no-legend | wc -l | tr -d ' ')"
 for u in ssh tailscaled mbpfan; do check "$u" active "$(systemctl is-active "$u")"; done
 check thermald     masked "$(systemctl is-enabled thermald 2>/dev/null)"
 check battery-limit active "$(systemctl is-active battery-limit)"
+# The offset set at boot must match the unit's value; empty on both when setup skipped it.
+check undervolt    "$(grep -o 'boot -[0-9]*' /etc/systemd/system/undervolt.service 2>/dev/null | cut -d' ' -f2)" "$(cat /var/lib/undervolt/active 2>/dev/null)"
 # Reading the limit needs root; instead check the battery isn't charging past 80 %.
 bat=/sys/class/power_supply/BAT0
 check charge-limit held "$([ "$(cat $bat/status)" = Charging ] && [ $(( $(cat $bat/charge_now) * 100 / $(cat $bat/charge_full) )) -gt 81 ] && echo charging || echo held)"
