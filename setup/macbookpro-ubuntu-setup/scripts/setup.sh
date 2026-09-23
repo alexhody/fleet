@@ -306,11 +306,14 @@ Package: snapd
 Pin: release *
 Pin-Priority: -1
 EOF
+  # Apport (crash reports to Ubuntu): kernel crashes already go to pstore.
+  DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq apport apport-gtk apport-core-dump-handler >/dev/null 2>&1 || true
   # Desktop extras with no job on a lid-closed worker: colour profiles, screen
-  # sharing, mDNS, light sensor, crash reporters, a second syslog, GPU switching.
+  # sharing, mDNS, light sensor, crash reporters, a second syslog, GPU switching,
+  # firmware update checks (Apple ships none for these Macs through fwupd).
   for u in colord.service gnome-remote-desktop.service avahi-daemon.service avahi-daemon.socket \
-           iio-sensor-proxy.service kerneloops.service apport.service rsyslog.service \
-           switcheroo-control.service; do
+           iio-sensor-proxy.service kerneloops.service rsyslog.service \
+           switcheroo-control.service fwupd-refresh.timer; do
     systemctl disable --now "$u" 2>/dev/null || true
     systemctl mask "$u" 2>/dev/null || true
   done

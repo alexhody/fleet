@@ -206,8 +206,10 @@ sudo rm /etc/modprobe.d/disable-camera.conf
 sudo rm /etc/udev/rules.d/70-cardreader-off.rules && echo 1 | sudo tee /sys/bus/usb/devices/2-4/authorized
 # CUPS, ModemManager, notifiers
 sudo systemctl enable --now cups.socket cups.service cups-browsed ModemManager motd-news.timer
-# Desktop extras (colour profiles, screen sharing, mDNS, light sensor, crash reports, syslog, GPU switching)
-sudo systemctl unmask colord gnome-remote-desktop avahi-daemon.socket avahi-daemon iio-sensor-proxy kerneloops apport rsyslog switcheroo-control
+# Desktop extras (colour profiles, screen sharing, mDNS, light sensor, crash reports, syslog, GPU switching, firmware checks)
+sudo systemctl unmask colord gnome-remote-desktop avahi-daemon.socket avahi-daemon iio-sensor-proxy kerneloops rsyslog switcheroo-control fwupd-refresh.timer
+# Apport (Ubuntu crash reports)
+sudo apt install apport
 # Boot waiting for Wi-Fi
 sudo systemctl enable NetworkManager-wait-online.service
 # SSSD (only if you join a company/LDAP domain)
