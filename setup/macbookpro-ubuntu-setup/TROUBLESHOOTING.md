@@ -220,7 +220,7 @@ sudo systemctl enable NetworkManager-wait-online.service
 # SSSD (only if you join a company/LDAP domain)
 sudo systemctl unmask sssd.service sssd-{nss,autofs,pac,pam,pam-priv,ssh,sudo}.socket
 # Battery charge limit (sudo bclm prints the current one)
-sudo bclm 100
+sudo systemctl disable --now battery-limit && sudo bclm 100
 # Wi-Fi power-save back on (battery over latency)
 sudo rm /etc/NetworkManager/conf.d/99-wifi-powersave.conf; nmcli connection modify <name> wifi.powersave 3
 # zram
@@ -253,12 +253,13 @@ GDM logs `saturn` in automatically either way (`/etc/gdm3/custom.conf`).
   beat `-j4` by about 2 % on a sustained build.
 - `thermald` is masked. Without a Mac config its defaults halve the power limit and
   inject idle time, so long builds ran ~18 % slower (166–170 s vs 137–140 s for
-  3× Redis `-j8`). Under sustained load the CPU now averages ~96 °C instead of
-  ~93 °C and throttles itself at 100 °C. Bring it back with
+  3× Redis `-j8`). Under sustained load the CPU now averages 90–93 °C (96 °C before
+  the repaste) and throttles itself at 100 °C. Bring it back with
   `sudo systemctl unmask thermald && sudo systemctl enable --now thermald`.
 - The battery is worn (56 %). It's fine on AC, poor unplugged. It stops charging
   at 80 % to slow further wear. Above that, it holds its charge on AC rather than
-  draining down to 80. An SMC reset (Shift+Ctrl+Option+Power) puts the limit back
-  to 100: run `sudo bclm 80` again.
+  draining down to 80. An SMC reset (Shift+Ctrl+Option+Power) or a battery unplug
+  puts the limit back to 100 until the next boot, when `battery-limit.service` sets
+  it again (or run `sudo bclm 80`).
 - The `gpu-power-prefs` EFI variable doesn't help. Firmware clears it, and it
   only picks the boot GPU.

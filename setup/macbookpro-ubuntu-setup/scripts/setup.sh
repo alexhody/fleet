@@ -194,11 +194,11 @@ systemctl enable --now mbpfan
 if [ "$IS_MAC" = "1" ]; then
   log "  2.2b battery charge limit ${CHARGE_LIMIT}%"
   # Always on AC: a battery held full and hot wears fastest and swells. The SMC
-  # keeps the limit across reboots; an SMC reset puts it back to 100.
+  # keeps the limit across reboots, but an SMC reset or a battery unplug puts it
+  # back to 100, so battery-limit.service sets it again on every boot.
   cat > /usr/local/sbin/bclm <<'EOF'
 #!/usr/bin/env python3
 # Read or set the battery charge limit (SMC key BCLM) on Intel Macs.
-# The SMC keeps the value across reboots, so it only needs setting once.
 # Usage: bclm         print the limit
 #        bclm 80      stop charging at 80 %
 import os, sys, time
@@ -266,9 +266,24 @@ if len(sys.argv) > 1:
 print(read_key("BCLM"))
 EOF
   chmod 755 /usr/local/sbin/bclm
-  # Pause mbpfan so its SMC reads can't interleave with the write.
+  # Runs before mbpfan so their SMC accesses can't interleave.
+  cat > /etc/systemd/system/battery-limit.service <<EOF
+[Unit]
+Description=Stop charging the battery at ${CHARGE_LIMIT}%
+Before=mbpfan.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/bclm ${CHARGE_LIMIT}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable battery-limit.service
   systemctl stop mbpfan
-  /usr/local/sbin/bclm "$CHARGE_LIMIT" >/dev/null || warn "could not set the charge limit"
+  systemctl restart battery-limit.service || warn "could not set the charge limit"
   systemctl start mbpfan
 fi
 
