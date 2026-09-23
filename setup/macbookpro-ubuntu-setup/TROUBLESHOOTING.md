@@ -208,6 +208,8 @@ sudo rm /etc/systemd/zram-generator.conf
 # tmpfs /tmp
 sudo systemctl disable tmp.mount && sudo rm /etc/systemd/system/tmp.mount
 # noatime: restore from /etc/fstab.bak; sysctls: remove /etc/sysctl.d/60-fleet-perf.conf
+# BBR only: delete its two lines from 60-fleet-perf.conf, then
+sudo sysctl -w net.ipv4.tcp_congestion_control=cubic net.core.default_qdisc=fq_codel
 ```
 
 Reboot after the zram, tmpfs, fstab or modprobe changes.

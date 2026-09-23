@@ -8,7 +8,7 @@
 #                    power-save off, no-sleep, unused devices off (Bluetooth,
 #                    camera, SD reader) and unused services off (CUPS,
 #                    ModemManager, update notifiers, SSSD), zram swap, noatime,
-#                    tmpfs /tmp, inotify limits, thermald off, crash recovery (panic on
+#                    tmpfs /tmp, inotify limits, BBR, thermald off, crash recovery (panic on
 #                    hang, dump to pstore, auto-reboot, NVRAM cleanup)
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
 #   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
@@ -32,7 +32,7 @@
 #   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
 #   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader
 #   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/update-notifier/SSSD
-#   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits, thermald off
+#   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits, BBR, thermald off
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
 #   HEADLESS=1    boot to a text console (default: GUI on boot + don/doff toggles)
 #
@@ -314,6 +314,10 @@ vm.page-cluster = 0
 # File watchers (node, vite, tsc) fail silently on large repos at the default 65536.
 fs.inotify.max_user_watches = 524288
 fs.inotify.max_user_instances = 1024
+# BBR keeps queues short: ~38% less lag and half the retransmits while saturn sends
+# over Wi-Fi. fq paces its packets.
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
 EOF
   sysctl -p /etc/sysctl.d/60-fleet-perf.conf
   # thermald has no config for Macs: its defaults halve the power limit and inject

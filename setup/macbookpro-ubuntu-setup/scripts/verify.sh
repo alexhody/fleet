@@ -22,6 +22,7 @@ check zram         yes  "$(has zram "$(swapon --show=NAME --noheadings | grep zr
 check tmp          tmpfs "$(findmnt -no FSTYPE /tmp)"
 check noatime      yes  "$(has noatime "$(findmnt -no OPTIONS / | grep noatime)")"
 check inotify      524288 "$(sysctl -n fs.inotify.max_user_watches)"
+check tcp-bbr      "bbr fq" "$(sysctl -n net.ipv4.tcp_congestion_control) $(tc qdisc show dev wlp4s0 2>/dev/null | cut -d' ' -f2)"
 check failed-units 0    "$(systemctl --failed --no-legend | wc -l | tr -d ' ')"
 for u in ssh tailscaled mbpfan; do check "$u" active "$(systemctl is-active "$u")"; done
 check thermald     masked "$(systemctl is-enabled thermald 2>/dev/null)"

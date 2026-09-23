@@ -54,7 +54,7 @@ What it sets up:
 | Thermal/power | mbpfan, `thermald` masked (~18 % faster sustained builds), never sleeps, ignores lid | `/etc/systemd/logind.conf.d/99-no-sleep.conf` |
 | Wi-Fi | country set, power-save off | `wifi-regdom.service`, `/etc/NetworkManager/conf.d/99-wifi-powersave.conf` |
 | Off | Bluetooth, camera, SD reader, CUPS, ModemManager, update notifiers, SSSD, snapd at boot | `/etc/modprobe.d/disable-camera.conf`, `/etc/udev/rules.d/70-cardreader-off.rules` |
-| Memory/disk | zram swap (zstd), `noatime`, tmpfs `/tmp`, inotify 524288 | `/etc/systemd/zram-generator.conf`, `/etc/fstab`, `/etc/sysctl.d/60-fleet-perf.conf` |
+| Memory/disk/net | zram swap (zstd), `noatime`, tmpfs `/tmp`, inotify 524288, BBR + `fq` | `/etc/systemd/zram-generator.conf`, `/etc/fstab`, `/etc/sysctl.d/60-fleet-perf.conf` |
 | Crash recovery | a kernel hang or oops panics, saves a dump, reboots in 10 s; dumps cleared from NVRAM once archived | `/etc/sysctl.d/61-crash-reboot.conf`, `pstore-efi-cleanup.service` |
 | Access | key-only SSH, Tailscale, UFW (tailscale0 + LAN:22) | `/etc/ssh/sshd_config.d/99-hardening.conf` |
 | Toolchain | build-essential, git, gh, tmux, rg, fd, jq, Python, Docker, fnm + Node LTS, uv | |
