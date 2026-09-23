@@ -92,7 +92,7 @@ echo "  mac  : $IS_MAC"
 log "Phase 1 - GRUB boot parameters"
 if [ "$SKIP_GRUB" != "1" ] && [ "$IS_MAC" = "1" ]; then
   cp -n /etc/default/grub /etc/default/grub.bak 2>/dev/null || true
-  sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet libata.force=max_sec=2560 intel_iommu=off"|' /etc/default/grub
+  sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 libata.force=max_sec=2560 intel_iommu=off"|' /etc/default/grub
   # One-boot escape if NCQ ever misbehaves: `grub-reboot noncq-fallback && reboot`
   if ! grep -q noncq-fallback /etc/grub.d/40_custom; then
     BOOT_UUID=$(findmnt -no UUID /boot 2>/dev/null || findmnt -no UUID /)
@@ -576,6 +576,15 @@ install_sudoers desktop-toggles <<EOF
 $ADMIN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start gdm, /usr/bin/systemctl stop gdm, \\
     /usr/bin/tee /sys/class/backlight/gmux_backlight/bl_power, /usr/bin/tee /sys/class/backlight/gmux_backlight/brightness
 EOF
+
+# Keep kernel error noise (Wi-Fi firmware notes, the dGPU's EDID probe) off the text
+# console; the journal still has it. Must sort after Ubuntu's 10-console-messages.conf.
+cat > /etc/sysctl.d/20-quiet-console.conf <<'EOF'
+# Keep kernel error messages off the text console; they still go to the journal.
+# Loads after Ubuntu's 10-console-messages.conf, which would reset it to 4.
+kernel.printk = 3 4 1 7
+EOF
+sysctl -q -p /etc/sysctl.d/20-quiet-console.conf
 
 if [ "$GUI_ON_BOOT" = "1" ]; then
   log "  4.4 boot to the desktop (GDM); 'doff' stops it"

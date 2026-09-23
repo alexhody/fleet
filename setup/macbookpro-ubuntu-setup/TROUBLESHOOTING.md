@@ -20,7 +20,7 @@ Check: `journalctl -k | grep -E 'ata1|FPDMA|host bus'`.
    `sudo grub-reboot noncq-fallback && sudo reboot`. The next boot goes back to
    the default entry by itself.
 3. If `noncq` fixes it, make it permanent and keep the cap through udev. Set the
-   cmdline to `quiet libata.force=noncq intel_iommu=off` in `/etc/default/grub`,
+   cmdline to `quiet loglevel=3 libata.force=noncq intel_iommu=off` in `/etc/default/grub`,
    then `update-grub`. The `60-apple-ssd-max-sectors.rules` rule still caps I/O at
    1280 KiB. Random I/O drops about 15× (150k → 10k read IOPS).
 
@@ -91,7 +91,12 @@ boot until GDM takes over.
 
 ### Harmless log noise
 
-- amdgpu `EDID err … eDP-2`: the gmux never routes the panel to the dGPU.
+None of these reach the text console (`loglevel=3` plus `20-quiet-console.conf`). Read
+them with `journalctl -b -k -p err`. To see them on screen again, delete that file.
+
+- amdgpu `EDID err … eDP-2` / `No EDID read`: amdgpu probes the panel for a second before
+  `dgpu-off` cuts its power, and the gmux never routes the panel to it.
+  `video=eDP-2:d` doesn't stop the probe, so the message can only be hidden.
 - `ata1.00: unexpected _GTF length (8)`: Apple ACPI quirk.
 - `ata1.00: FORCE: modified (max_sec=)`: the cap being applied.
 - brcmfmac `no clm_blob available … limited channels`: Ubuntu ships no channel file

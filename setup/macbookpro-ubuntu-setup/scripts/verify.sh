@@ -30,6 +30,7 @@ check bluetooth-usb off "$(lsusb | grep -q 05ac:8290 && [ "$(cat /sys/bus/usb/de
 check snapd        gone "$(command -v snap >/dev/null && echo present || echo gone)"
 check sleep        masked "$(systemctl is-enabled sleep.target 2>/dev/null)"
 check boot-target  multi-user.target "$(systemctl get-default)"
+check console-log  3    "$(cut -f1 /proc/sys/kernel/printk)"
 check panic-reboot 10   "$(sysctl -n kernel.panic)"
 check hang-panic   "1 1 1" "$(sysctl -n kernel.softlockup_panic kernel.hardlockup_panic kernel.hung_task_panic | xargs)"
 check nvram-dumps  0    "$(ls /sys/firmware/efi/efivars 2>/dev/null | grep -c '^dump-')"
