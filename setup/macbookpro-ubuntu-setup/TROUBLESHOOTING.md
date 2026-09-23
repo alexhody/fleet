@@ -181,7 +181,8 @@ ssh saturn 'bash -lic "command -v node"'        # interactive: path in fnm_multi
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | containers gone after reboot | Docker is off at boot | `dockeron`, or re-run setup with `DOCKER_ON=1` |
-| `snap` commands hang | snapd is off at boot | `don`, or `sudo systemctl start snapd.socket snapd.service` |
+| need a snap app (e.g. Chromium) | snapd is removed and pinned out | `sudo rm /etc/apt/preferences.d/no-snapd && sudo apt install snapd` |
+| `saturn-mbp.local` doesn't resolve | avahi (mDNS) is masked | use the Tailscale name, or `sudo systemctl unmask --now avahi-daemon.socket avahi-daemon.service` |
 | no GUI at the panel | `doff` was run, or `HEADLESS=1` | `don` |
 | `don`/`doff`/`dockeron`/`dockeroff` ask for a password | sudoers rule missing, or the functions differ from the rule (it matches exact commands) | `sudo -l` must list them (`/etc/sudoers.d/desktop-toggles`, `docker-toggles`); re-run setup |
 | files in `/tmp` vanished | tmpfs, wiped on boot | use `~/jobs` |
@@ -199,6 +200,10 @@ sudo rm /etc/modprobe.d/disable-camera.conf
 sudo rm /etc/udev/rules.d/70-cardreader-off.rules && echo 1 | sudo tee /sys/bus/usb/devices/2-4/authorized
 # CUPS, ModemManager, notifiers
 sudo systemctl enable --now cups.socket cups.service cups-browsed ModemManager motd-news.timer
+# Desktop extras (colour profiles, screen sharing, mDNS, light sensor, crash reports, syslog, GPU switching)
+sudo systemctl unmask colord gnome-remote-desktop avahi-daemon.socket avahi-daemon iio-sensor-proxy kerneloops apport rsyslog switcheroo-control
+# Boot waiting for Wi-Fi
+sudo systemctl enable NetworkManager-wait-online.service
 # SSSD (only if you join a company/LDAP domain)
 sudo systemctl unmask sssd.service sssd-{nss,autofs,pac,pam,pam-priv,ssh,sudo}.socket
 # Wi-Fi power-save back on (battery over latency)

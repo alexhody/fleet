@@ -7,7 +7,7 @@
 #   2. Hardware    : apt helpers, dGPU off, fans, Wi-Fi reg domain, Wi-Fi
 #                    power-save off, no-sleep, unused devices off (Bluetooth,
 #                    camera, SD reader) and unused services off (CUPS,
-#                    ModemManager, update notifiers, SSSD), zram swap, noatime,
+#                    ModemManager, notifiers, SSSD, snapd, desktop extras), zram, noatime,
 #                    tmpfs /tmp, inotify limits, BBR, thermald off, crash recovery (panic on
 #                    hang, dump to pstore, auto-reboot, NVRAM cleanup)
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
@@ -31,7 +31,7 @@
 #   SKIP_GRUB=1   do not touch GRUB cmdline
 #   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
 #   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader
-#   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/update-notifier/SSSD
+#   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/notifiers/SSSD/snaps/desktop extras
 #   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits, BBR, thermald off
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
 #   HEADLESS=1    boot to a text console (default: GUI on boot + don/doff toggles)
@@ -276,7 +276,7 @@ else
 fi
 
 if [ "$SKIP_SERVICES" != "1" ]; then
-  log "  2.6 disabling unused services (printing, modem, update notifiers)"
+  log "  2.6 disabling unused services (printing, modem, notifiers, snaps, desktop extras)"
   # CUPS: printing daemon + network printer discovery (no printers configured)
   systemctl disable --now cups.path cups.socket cups.service cups-browsed.service 2>/dev/null || true
   # ModemManager: Wi-Fi only, no WWAN modem
@@ -287,6 +287,29 @@ if [ "$SKIP_SERVICES" != "1" ]; then
   # Masked, not removed: PAM and nsswitch reference it.
   systemctl mask sssd.service sssd-nss.socket sssd-autofs.socket sssd-pac.socket \
     sssd-pam.socket sssd-pam-priv.socket sssd-ssh.socket sssd-sudo.socket 2>/dev/null || true
+  # Snaps: only desktop apps (Firefox, Snap Store, Firmware Updater) use them; Chrome
+  # comes from apt. Purging snapd removes every snap. The pin keeps apt from pulling
+  # it back in as a dependency.
+  systemctl stop snapd.service snapd.socket snapd.seeded.service 2>/dev/null || true
+  DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq firefox snapd >/dev/null 2>&1 || true
+  rm -rf /var/lib/snapd /var/cache/snapd /snap
+  cat > /etc/apt/preferences.d/no-snapd <<'EOF'
+# Saturn has no snap apps. Stop apt from pulling snapd back in as a dependency.
+# To install a snap again: delete this file, then apt install snapd.
+Package: snapd
+Pin: release *
+Pin-Priority: -1
+EOF
+  # Desktop extras with no job on a lid-closed worker: colour profiles, screen
+  # sharing, mDNS, light sensor, crash reporters, a second syslog, GPU switching.
+  for u in colord.service gnome-remote-desktop.service avahi-daemon.service avahi-daemon.socket \
+           iio-sensor-proxy.service kerneloops.service apport.service rsyslog.service \
+           switcheroo-control.service; do
+    systemctl disable --now "$u" 2>/dev/null || true
+    systemctl mask "$u" 2>/dev/null || true
+  done
+  # Boot need not wait for Wi-Fi; SSH and Tailscale pick it up when it connects.
+  systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
 else
   warn "skipping unused-service power-off"
 fi
@@ -516,10 +539,7 @@ sudo -u "$ADMIN_USER" -H bash -c '
   mkdir -p "$HOME/jobs" "$HOME/Code"
 ' || warn "agent CLI install failed; rerun the installers as $ADMIN_USER"
 
-log "  4.3 snapd off at boot + don/doff/dstat toggles"
-# snapd only backs GUI snaps (Firefox, snap-store); don/doff toggle it.
-systemctl disable --now snapd.service snapd.socket 2>/dev/null || true
-
+log "  4.3 don/doff/dstat toggles"
 grep -q 'doff()' "$ADMIN_HOME/.bash_aliases" 2>/dev/null || \
 sudo -u "$ADMIN_USER" -H bash -c 'cat >> "$HOME/.bash_aliases" <<'"'"'EOF'"'"'
 # Desktop session toggles
@@ -528,7 +548,6 @@ BL=/sys/class/backlight/gmux_backlight
 BL_STATE=$HOME/.doff_brightness
 
 don() {
-    sudo systemctl start snapd.socket snapd.service
     sudo systemctl start gdm
     if [ -f "$BL_STATE" ]; then
         echo 0 | sudo tee "$BL/bl_power" >/dev/null
@@ -540,7 +559,6 @@ doff() {
     cat "$BL/brightness" > "$BL_STATE" 2>/dev/null
     echo 1 | sudo tee "$BL/bl_power" >/dev/null
     sudo systemctl stop gdm
-    sudo systemctl stop snapd.service snapd.socket
 }
 
 alias dstat='"'"'systemctl is-active gdm'"'"'
@@ -550,7 +568,6 @@ EOF' || warn "could not write $ADMIN_USER shell aliases"
 install_sudoers desktop-toggles <<EOF
 # don/doff (~/.bash_aliases) toggle the desktop without a password prompt.
 $ADMIN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start gdm, /usr/bin/systemctl stop gdm, \\
-    /usr/bin/systemctl start snapd.socket snapd.service, /usr/bin/systemctl stop snapd.service snapd.socket, \\
     /usr/bin/tee /sys/class/backlight/gmux_backlight/bl_power, /usr/bin/tee /sys/class/backlight/gmux_backlight/brightness
 EOF
 
