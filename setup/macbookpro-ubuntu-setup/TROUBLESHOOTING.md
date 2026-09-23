@@ -183,7 +183,7 @@ ssh saturn 'bash -lic "command -v node"'        # interactive: path in fnm_multi
 | containers gone after reboot | Docker is off at boot | `dockeron`, or re-run setup with `DOCKER_ON=1` |
 | need a snap app (e.g. Chromium) | snapd is removed and pinned out | `sudo rm /etc/apt/preferences.d/no-snapd && sudo apt install snapd` |
 | `saturn-mbp.local` doesn't resolve | avahi (mDNS) is masked | use the Tailscale name, or `sudo systemctl unmask --now avahi-daemon.socket avahi-daemon.service` |
-| no GUI at the panel | `doff` was run, or `HEADLESS=1` | `don` |
+| no GUI at the panel | it boots to a text console | `don` |
 | `don`/`doff`/`dockeron`/`dockeroff` ask for a password | sudoers rule missing, or the functions differ from the rule (it matches exact commands) | `sudo -l` must list them (`/etc/sudoers.d/desktop-toggles`, `docker-toggles`); re-run setup |
 | files in `/tmp` vanished | tmpfs, wiped on boot | use `~/jobs` |
 | apt fails on `liberror-perl` | broken `noble/main` index | `sudo rm -rf /var/lib/apt/lists/* && sudo apt-get update` |
@@ -192,7 +192,8 @@ ssh saturn 'bash -lic "command -v node"'        # interactive: path in fnm_multi
 ### Undo individual changes
 
 ```bash
-# Bluetooth
+# Bluetooth (the controller comes back on the next boot)
+sudo rm /etc/udev/rules.d/70-bluetooth-off.rules
 sudo systemctl enable --now bluetooth && sudo rfkill unblock bluetooth
 # Camera
 sudo rm /etc/modprobe.d/disable-camera.conf
@@ -219,14 +220,13 @@ sudo sysctl -w net.ipv4.tcp_congestion_control=cubic net.core.default_qdisc=fq_c
 
 Reboot after the zram, tmpfs, fstab or modprobe changes.
 
-### Boot to a text console instead of GDM
+### Boot straight to the desktop instead of the text console
 
 ```bash
-sudo systemctl set-default multi-user.target
-sudo rm -f /etc/systemd/system/display-manager.service   # `disable gdm` is a no-op: static unit
+sudo systemctl set-default graphical.target      # back: sudo systemctl set-default multi-user.target
 ```
 
-Undo with `sudo systemctl set-default graphical.target && sudo dpkg-reconfigure gdm3`.
+GDM logs `saturn` in automatically either way (`/etc/gdm3/custom.conf`).
 
 ## Known trade-offs
 

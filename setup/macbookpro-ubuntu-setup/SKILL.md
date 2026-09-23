@@ -41,7 +41,7 @@ Takes about 10 minutes. It is safe to re-run. Password SSH stays on until step 3
 | `COUNTRY=<cc>` | Wi-Fi regulatory domain (skipped if unset) |
 | `LAN_CIDR=…` | also allow SSH from the LAN (default: Tailscale only) |
 | `DOCKER_ON=1` | Docker running at boot (default: installed, off) |
-| `HEADLESS=1` | boot to a text console instead of GDM |
+| `GUI_ON_BOOT=1` | boot straight to the desktop (default: text console) |
 | `SKIP_GRUB`, `SKIP_DGPU`, `SKIP_WIFI_PS`, `SKIP_DEVICES`, `SKIP_SERVICES`, `SKIP_TUNING` | skip that part |
 
 What it sets up:
@@ -53,7 +53,7 @@ What it sets up:
 | dGPU | powered off through the gmux at boot, hidden from GNOME | `/etc/modprobe.d/blacklist-amdgpu.conf`, `/usr/local/sbin/dgpu-off`, `dgpu-off.service`, `/etc/udev/rules.d/72-dgpu-ignore.rules` |
 | Thermal/power | mbpfan, `thermald` masked (~18 % faster sustained builds), never sleeps, ignores lid | `/etc/systemd/logind.conf.d/99-no-sleep.conf` |
 | Wi-Fi | country set, power-save off | `wifi-regdom.service`, `/etc/NetworkManager/conf.d/99-wifi-powersave.conf` |
-| Off | Bluetooth, camera, SD reader, CUPS, ModemManager, update notifiers, SSSD, colord, avahi, rsyslog, apport, remote desktop, boot wait for Wi-Fi | `/etc/modprobe.d/disable-camera.conf`, `/etc/udev/rules.d/70-cardreader-off.rules` |
+| Off | Bluetooth (radio and USB controller), camera, SD reader, CUPS, ModemManager, update notifiers, SSSD, colord, avahi, rsyslog, apport, remote desktop, boot wait for Wi-Fi | `/etc/modprobe.d/disable-camera.conf`, `/etc/udev/rules.d/70-{cardreader,bluetooth}-off.rules` |
 | Removed | snapd and every snap (Firefox, Snap Store, …), pinned so apt can't reinstall it; Chrome from apt is unaffected | `/etc/apt/preferences.d/no-snapd` |
 | Memory/disk/net | zram swap (zstd), `noatime`, tmpfs `/tmp`, inotify 524288, BBR + `fq` | `/etc/systemd/zram-generator.conf`, `/etc/fstab`, `/etc/sysctl.d/60-fleet-perf.conf` |
 | Crash recovery | a kernel hang or oops panics, saves a dump, reboots in 10 s; dumps cleared from NVRAM once archived | `/etc/sysctl.d/61-crash-reboot.conf`, `pstore-efi-cleanup.service` |
@@ -111,8 +111,9 @@ Optional: `sudo pro attach <TOKEN> && sudo pro enable esm-apps esm-infra livepat
 
 ## 6. Daily use
 
-- It boots to GDM. After `ssh saturn`, run `doff` to stop the desktop and blank
-  the panel. `don` brings it back. Neither asks for a password.
+- It boots to a text console with Wi-Fi, SSH and Tailscale up. `don` starts the
+  desktop (about 5 s), `doff` stops it and turns the panel off, `dstat` reports.
+  None asks for a password.
 - Docker stays off until `dockeron` (`dockeroff` to stop, `dkstat` for status). No
   password either. Containers don't come back after a reboot.
 - Dev servers on saturn are reachable from the laptop at `saturn-mbp:<port>`.

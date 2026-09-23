@@ -13,7 +13,7 @@
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
 #   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
 #                    non-interactive-shell PATH, agent CLIs (Claude Code,
-#                    Codex, opencode), GUI-on-boot + don/doff toggles
+#                    Codex, opencode), text-console boot + don/doff toggles
 #
 # Usage:
 #   sudo ADMIN_USER=saturn \
@@ -34,7 +34,7 @@
 #   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/notifiers/SSSD/snaps/desktop extras
 #   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits, BBR, thermald off
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
-#   HEADLESS=1    boot to a text console (default: GUI on boot + don/doff toggles)
+#   GUI_ON_BOOT=1 boot straight to the desktop (default: text console; don/doff toggle it)
 #
 set -euo pipefail
 
@@ -73,7 +73,7 @@ SKIP_DEVICES="${SKIP_DEVICES:-0}"
 SKIP_SERVICES="${SKIP_SERVICES:-0}"
 SKIP_TUNING="${SKIP_TUNING:-0}"
 DOCKER_ON="${DOCKER_ON:-0}"
-HEADLESS="${HEADLESS:-0}"
+GUI_ON_BOOT="${GUI_ON_BOOT:-0}"
 
 if [ -n "${SSH_PUBKEY_FILE:-}" ] && [ -z "${SSH_PUBKEY:-}" ]; then
   SSH_PUBKEY="$(cat "$SSH_PUBKEY_FILE")"
@@ -257,16 +257,22 @@ if [ "$SKIP_DEVICES" != "1" ] && [ "$IS_MAC" = "1" ]; then
   # Bluetooth: stop service + soft-block radio (persists via systemd-rfkill)
   systemctl disable --now bluetooth 2>/dev/null || true
   rfkill block bluetooth 2>/dev/null || true
+  # ...and switch the controller (05ac:8290) off: while blocked it times out on every
+  # USB suspend attempt and prints "usb 1-8: Failed to suspend device, error -110".
+  printf '%s\n' \
+    '# Internal Bluetooth (Broadcom 05ac:8290): unused, and while rfkill-blocked it times out' \
+    '# on every USB suspend attempt ("usb 1-8: Failed to suspend device, error -110").' \
+    'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="8290", ATTR{authorized}="0"' \
+    > /etc/udev/rules.d/70-bluetooth-off.rules
 
   # FaceTime HD camera: never bind its driver
   echo "blacklist uvcvideo" > /etc/modprobe.d/disable-camera.conf
 
-  # SD card reader (Apple 05ac:8406): deauthorize wherever it enumerated + persist
+  # SD card reader (Apple 05ac:8406) and Bluetooth (05ac:8290): deauthorize now + persist
   for dev in /sys/bus/usb/devices/*/; do
-    if [ "$(cat "$dev/idVendor" 2>/dev/null)" = "05ac" ] && \
-       [ "$(cat "$dev/idProduct" 2>/dev/null)" = "8406" ]; then
-      echo 0 > "$dev/authorized" 2>/dev/null || true
-    fi
+    case "$(cat "$dev/idVendor" 2>/dev/null):$(cat "$dev/idProduct" 2>/dev/null)" in
+      05ac:8406|05ac:8290) echo 0 > "$dev/authorized" 2>/dev/null || true ;;
+    esac
   done
   printf '%s\n' 'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="8406", ATTR{authorized}="0"' \
     > /etc/udev/rules.d/70-cardreader-off.rules
@@ -571,14 +577,13 @@ $ADMIN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start gdm, /usr/bin/systemct
     /usr/bin/tee /sys/class/backlight/gmux_backlight/bl_power, /usr/bin/tee /sys/class/backlight/gmux_backlight/brightness
 EOF
 
-if [ "$HEADLESS" = "1" ]; then
-  log "  4.4 headless boot (no GUI): multi-user.target, GDM removed from boot"
-  systemctl set-default multi-user.target
-  # `systemctl disable gdm` is a no-op (static unit); drop the display-manager link.
-  rm -f /etc/systemd/system/display-manager.service
-  systemctl stop gdm 2>/dev/null || true
+if [ "$GUI_ON_BOOT" = "1" ]; then
+  log "  4.4 boot to the desktop (GDM); 'doff' stops it"
+  systemctl set-default graphical.target
 else
-  log "  4.4 GUI on boot (default): GDM stays enabled; run 'doff' after SSH"
+  # GDM stays installed; graphical.target is never reached, so only 'don' starts it.
+  log "  4.4 boot to a text console; 'don' starts the desktop, 'doff' stops it"
+  systemctl set-default multi-user.target
 fi
 
 # ================================================================ SUMMARY

@@ -26,8 +26,10 @@ check tcp-bbr      "bbr fq" "$(sysctl -n net.ipv4.tcp_congestion_control) $(tc q
 check failed-units 0    "$(systemctl --failed --no-legend | wc -l | tr -d ' ')"
 for u in ssh tailscaled mbpfan; do check "$u" active "$(systemctl is-active "$u")"; done
 check thermald     masked "$(systemctl is-enabled thermald 2>/dev/null)"
+check bluetooth-usb off "$(lsusb | grep -q 05ac:8290 && [ "$(cat /sys/bus/usb/devices/1-8/authorized 2>/dev/null)" = 1 ] && echo on || echo off)"
 check snapd        gone "$(command -v snap >/dev/null && echo present || echo gone)"
 check sleep        masked "$(systemctl is-enabled sleep.target 2>/dev/null)"
+check boot-target  multi-user.target "$(systemctl get-default)"
 check panic-reboot 10   "$(sysctl -n kernel.panic)"
 check hang-panic   "1 1 1" "$(sysctl -n kernel.softlockup_panic kernel.hardlockup_panic kernel.hung_task_panic | xargs)"
 check nvram-dumps  0    "$(ls /sys/firmware/efi/efivars 2>/dev/null | grep -c '^dump-')"
