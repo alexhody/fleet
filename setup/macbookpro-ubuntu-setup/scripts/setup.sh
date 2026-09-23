@@ -4,7 +4,7 @@
 # Phases (boot params, then hardware, then remote access, then workload):
 #   1. Boot params : GRUB quirks (SSD write-size cap, IOMMU), NCQ on, noncq
 #                    fallback entry - must precede first reboot
-#   2. Hardware    : apt helpers, dGPU off, fans, Wi-Fi reg domain, Wi-Fi
+#   2. Hardware    : apt helpers, dGPU off, fans, battery charge limit, Wi-Fi reg domain, Wi-Fi
 #                    power-save off, no-sleep, unused devices off (Bluetooth,
 #                    camera, SD reader) and unused services off (CUPS,
 #                    ModemManager, notifiers, SSSD, snapd, desktop extras), zram, noatime,
@@ -27,6 +27,7 @@
 #   SSH_PUBKEY    public key line to authorize (or use SSH_PUBKEY_FILE)
 #   LAN_CIDR      LAN subnet allowed to SSH (default: none -> Tailscale only)
 #   COUNTRY       2-letter Wi-Fi country code (default: skip reg-domain step)
+#   CHARGE_LIMIT  stop charging the battery at this % (default 80; 100 = no limit)
 #   SKIP_DGPU=1   do not set up the AMD dGPU power-off
 #   SKIP_GRUB=1   do not touch GRUB cmdline
 #   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
@@ -66,6 +67,7 @@ fi
 ADMIN_HOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
 LAN_CIDR="${LAN_CIDR:-}"
 COUNTRY="${COUNTRY:-}"
+CHARGE_LIMIT="${CHARGE_LIMIT:-80}"
 SKIP_DGPU="${SKIP_DGPU:-0}"
 SKIP_GRUB="${SKIP_GRUB:-0}"
 SKIP_WIFI_PS="${SKIP_WIFI_PS:-0}"
@@ -188,6 +190,87 @@ fi
 
 log "  2.2 fan control (mbpfan)"
 systemctl enable --now mbpfan
+
+if [ "$IS_MAC" = "1" ]; then
+  log "  2.2b battery charge limit ${CHARGE_LIMIT}%"
+  # Always on AC: a battery held full and hot wears fastest and swells. The SMC
+  # keeps the limit across reboots; an SMC reset puts it back to 100.
+  cat > /usr/local/sbin/bclm <<'EOF'
+#!/usr/bin/env python3
+# Read or set the battery charge limit (SMC key BCLM) on Intel Macs.
+# The SMC keeps the value across reboots, so it only needs setting once.
+# Usage: bclm         print the limit
+#        bclm 80      stop charging at 80 %
+import os, sys, time
+
+DATA, CMD = 0x300, 0x304
+READ, WRITE = 0x10, 0x11
+AWAITING_DATA, IB_CLOSED, BUSY = 1, 2, 4
+
+fd = os.open("/dev/port", os.O_RDWR)
+inb = lambda port: os.pread(fd, 1, port)[0]
+outb = lambda val, port: os.pwrite(fd, bytes([val]), port)
+
+def wait_status(val, mask):
+    us = 8
+    for i in range(24):
+        if inb(CMD) & mask == val:
+            return
+        time.sleep(us / 1e6)
+        if i > 9:
+            us <<= 1
+    raise IOError("SMC not responding")
+
+def send_byte(b, port):
+    wait_status(0, IB_CLOSED)
+    wait_status(BUSY, BUSY)
+    outb(b, port)
+
+def send_command(c):
+    wait_status(0, IB_CLOSED)
+    outb(c, CMD)
+
+def start(cmd, key, length):
+    try:
+        wait_status(0, BUSY)
+    except IOError:
+        send_command(READ)
+        wait_status(0, BUSY)
+    send_command(cmd)
+    for ch in key.encode():
+        send_byte(ch, DATA)
+    send_byte(length, DATA)
+
+def read_key(key):
+    start(READ, key, 1)
+    wait_status(AWAITING_DATA | BUSY, AWAITING_DATA | BUSY)
+    val = inb(DATA)
+    for _ in range(16):
+        time.sleep(8 / 1e6)
+        if not inb(CMD) & AWAITING_DATA:
+            break
+        inb(DATA)
+    wait_status(0, BUSY)
+    return val
+
+def write_key(key, val):
+    start(WRITE, key, 1)
+    send_byte(val, DATA)
+    wait_status(0, BUSY)
+
+if len(sys.argv) > 1:
+    limit = int(sys.argv[1])
+    if not 20 <= limit <= 100:
+        sys.exit("limit must be 20-100")
+    write_key("BCLM", limit)
+print(read_key("BCLM"))
+EOF
+  chmod 755 /usr/local/sbin/bclm
+  # Pause mbpfan so its SMC reads can't interleave with the write.
+  systemctl stop mbpfan
+  /usr/local/sbin/bclm "$CHARGE_LIMIT" >/dev/null || warn "could not set the charge limit"
+  systemctl start mbpfan
+fi
 
 if [ -n "$COUNTRY" ]; then
   log "  2.3 Wi-Fi regulatory domain = $COUNTRY"

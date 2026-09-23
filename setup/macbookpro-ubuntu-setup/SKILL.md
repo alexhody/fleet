@@ -39,6 +39,7 @@ Takes about 10 minutes. It is safe to re-run. Password SSH stays on until step 3
 | Option | Effect |
 | --- | --- |
 | `COUNTRY=<cc>` | Wi-Fi regulatory domain (skipped if unset) |
+| `CHARGE_LIMIT=80` | battery stops charging at this % (default 80, `100` for no limit) |
 | `LAN_CIDR=…` | also allow SSH from the LAN (default: Tailscale only) |
 | `DOCKER_ON=1` | Docker running at boot (default: installed, off) |
 | `GUI_ON_BOOT=1` | boot straight to the desktop (default: text console) |
@@ -51,7 +52,7 @@ What it sets up:
 | Boot | `quiet loglevel=3 libata.force=max_sec=2560 intel_iommu=off`, no splash, `noncq-fallback` GRUB entry; text console shows only the login prompt | `/etc/default/grub`, `/etc/grub.d/40_custom`, `/etc/sysctl.d/20-quiet-console.conf` |
 | SSD | I/O capped at 1280 KiB, NCQ on | `/etc/udev/rules.d/60-apple-ssd-max-sectors.rules` |
 | dGPU | powered off through the gmux at boot, hidden from GNOME | `/etc/modprobe.d/blacklist-amdgpu.conf`, `/usr/local/sbin/dgpu-off`, `dgpu-off.service`, `/etc/udev/rules.d/72-dgpu-ignore.rules` |
-| Thermal/power | mbpfan, `thermald` masked (~18 % faster sustained builds), never sleeps, ignores lid | `/etc/systemd/logind.conf.d/99-no-sleep.conf` |
+| Thermal/power | mbpfan, `thermald` masked (~18 % faster sustained builds), battery stops charging at 80 %, never sleeps, ignores lid | `/usr/local/sbin/bclm`, `/etc/systemd/logind.conf.d/99-no-sleep.conf` |
 | Wi-Fi | country set, power-save off | `wifi-regdom.service`, `/etc/NetworkManager/conf.d/99-wifi-powersave.conf` |
 | Off | Bluetooth (radio and USB controller), camera, SD reader, CUPS, ModemManager, update notifiers, SSSD, colord, avahi, rsyslog, remote desktop, firmware update checks, boot wait for Wi-Fi | `/etc/modprobe.d/disable-camera.conf`, `/etc/udev/rules.d/70-{cardreader,bluetooth}-off.rules` |
 | Removed | snapd and every snap (Firefox, Snap Store, …), pinned so apt can't reinstall it (Chrome from apt is unaffected); apport | `/etc/apt/preferences.d/no-snapd` |
