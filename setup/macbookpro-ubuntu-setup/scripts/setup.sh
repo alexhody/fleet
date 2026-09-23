@@ -8,7 +8,7 @@
 #                    power-save off, no-sleep, unused devices off (Bluetooth,
 #                    camera, SD reader) and unused services off (CUPS,
 #                    ModemManager, update notifiers, SSSD), zram swap, noatime,
-#                    tmpfs /tmp, inotify limits, crash recovery (panic on
+#                    tmpfs /tmp, inotify limits, thermald off, crash recovery (panic on
 #                    hang, dump to pstore, auto-reboot, NVRAM cleanup)
 #   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
 #   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
@@ -32,7 +32,7 @@
 #   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
 #   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader
 #   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/update-notifier/SSSD
-#   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits
+#   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits, thermald off
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
 #   HEADLESS=1    boot to a text console (default: GUI on boot + don/doff toggles)
 #
@@ -316,6 +316,13 @@ fs.inotify.max_user_watches = 524288
 fs.inotify.max_user_instances = 1024
 EOF
   sysctl -p /etc/sysctl.d/60-fleet-perf.conf
+  # thermald has no config for Macs: its defaults halve the power limit and inject
+  # idle time, which made sustained builds ~18% slower. The CPU still throttles
+  # itself at 100 C and mbpfan runs the fans.
+  if [ "$IS_MAC" = "1" ]; then
+    systemctl disable --now thermald 2>/dev/null || true
+    systemctl mask thermald 2>/dev/null || true
+  fi
 else
   warn "skipping memory/disk tuning"
 fi

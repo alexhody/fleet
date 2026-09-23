@@ -228,8 +228,13 @@ Undo with `sudo systemctl set-default graphical.target && sudo dpkg-reconfigure 
 - CPU mitigations stay on. Agents run fetched code (npm postinstall, scraped
   content).
 - Under sustained all-core load, the CPU hits 100 °C and throttles to 800 MHz,
-  even with the fans at max. Long parallel builds run at about 2.4 GHz on
-  average. Use `-j4` rather than `-j8`.
+  even with the fans at max. Keep the default 8 build workers anyway: `-j8` still
+  beat `-j4` by about 2 % on a sustained build.
+- `thermald` is masked. Without a Mac config its defaults halve the power limit and
+  inject idle time, so long builds ran ~18 % slower (166–170 s vs 137–140 s for
+  3× Redis `-j8`). Under sustained load the CPU now averages ~96 °C instead of
+  ~93 °C and throttles itself at 100 °C. Bring it back with
+  `sudo systemctl unmask thermald && sudo systemctl enable --now thermald`.
 - The battery is worn (56 %). It's fine on AC, poor unplugged.
 - The `gpu-power-prefs` EFI variable doesn't help. Firmware clears it, and it
   only picks the boot GPU.

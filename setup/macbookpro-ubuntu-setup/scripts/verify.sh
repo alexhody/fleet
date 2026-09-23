@@ -24,6 +24,7 @@ check noatime      yes  "$(has noatime "$(findmnt -no OPTIONS / | grep noatime)"
 check inotify      524288 "$(sysctl -n fs.inotify.max_user_watches)"
 check failed-units 0    "$(systemctl --failed --no-legend | wc -l | tr -d ' ')"
 for u in ssh tailscaled mbpfan; do check "$u" active "$(systemctl is-active "$u")"; done
+check thermald     masked "$(systemctl is-enabled thermald 2>/dev/null)"
 check sleep        masked "$(systemctl is-enabled sleep.target 2>/dev/null)"
 check panic-reboot 10   "$(sysctl -n kernel.panic)"
 check hang-panic   "1 1 1" "$(sysctl -n kernel.softlockup_panic kernel.hardlockup_panic kernel.hung_task_panic | xargs)"
