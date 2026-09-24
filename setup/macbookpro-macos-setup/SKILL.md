@@ -1,6 +1,6 @@
 ---
 name: macbookpro-macos-setup
-description: Use when provisioning an Apple Silicon MacBook Pro on macOS (the neptune worker) into a remote agentic-coding and mobile-testing worker for React Native, iOS, Android and web, driven from the control laptop over Tailscale and SSH. Runs scripts/setup.sh (no sleep, no auto-updates, auto-login, SSH, Screen Sharing, Tailscale daemon with Tailscale SSH, Spotlight off, open-file limit, Homebrew toolchain, JDK 17, Node, Xcode, Android SDK + AVD, Claude Code, Codex, opencode, Argent MCP), then the manual logins and scripts/verify.sh. Trigger on "set up neptune", "set up another mac", "reprovision the mac worker", "new MacBook worker", "neptune broke", "neptune unreachable".
+description: Use when provisioning an Apple Silicon MacBook Pro on macOS (the neptune worker) into a remote agentic-coding and mobile-testing worker for React Native, iOS, Android and web, driven from the control laptop over Tailscale and SSH. Runs scripts/setup.sh (no sleep, no auto-updates, auto-login, SSH, Screen Sharing, Tailscale daemon with Tailscale SSH, Spotlight off, open-file limit, Homebrew toolchain, JDK 17, Node, Xcode, Android SDK + AVD, Claude Code, Codex, opencode, Argent MCP), then the manual logins and scripts/verify.sh. Also installs an optional self-hosted RustDesk server (scripts/rustdesk-server.sh). Trigger on "set up neptune", "RustDesk server", "set up another mac", "reprovision the mac worker", "new MacBook worker", "neptune broke", "neptune unreachable".
 ---
 
 # MacBook Pro macOS → agentic-coding + mobile-testing worker
@@ -148,3 +148,54 @@ Optional: `ssh neptune argent telemetry disable`.
 - Dev servers on neptune are reachable from the laptop at `neptune-mbp:<port>`.
 - macOS and Xcode update only by hand, over Screen Sharing, when your React
   Native version supports the new SDK.
+
+## 7. RustDesk server (optional)
+
+A self-hosted RustDesk ID server (`hbbs`) and relay (`hbbr`) for remote
+desktop over Tailscale and the LAN. RustDesk ships server binaries only for
+Linux and Windows, so the script builds them from source:
+
+```bash
+ssh neptune 'bash ~/Code/fleet/setup/macbookpro-macos-setup/scripts/rustdesk-server.sh'
+```
+
+It installs Rust from Homebrew if needed, builds `RUSTDESK_VERSION` (default
+1.1.16) in `~/Library/Caches/rustdesk-server`, and runs both as launchd agents
+(`com.rustdesk.hbbs`, `com.rustdesk.hbbr`) that start at auto-login and restart
+if they exit. Both run with `-k _`: only clients with the server's key connect.
+Files follow the Homebrew layout, which `neptune` owns, so no sudo is needed.
+Safe to re-run; run it again with a new `RUSTDESK_VERSION` to upgrade.
+
+| Item | Where |
+| --- | --- |
+| Binaries | `/opt/homebrew/bin/{hbbs,hbbr}` |
+| Key pair, peer DB | `/opt/homebrew/var/rustdesk-server/` (back up `id_ed25519`) |
+| Logs | `/opt/homebrew/var/log/rustdesk-server/` |
+| Source, build cache | `~/Library/Caches/rustdesk-server` (about 2 GB, safe to delete) |
+| Ports | TCP 21115-21117, UDP 21116, TCP 21118/21119 (web client) |
+
+Every RustDesk app that uses this server, including neptune's own, needs the
+same two settings in Settings > Network > Unlock network settings > ID/Relay
+server:
+
+- **ID server**: `neptune-mbp` (Tailscale), or the LAN IP for devices not on the tailnet
+- **Key**: `ssh neptune cat /opt/homebrew/var/rustdesk-server/id_ed25519.pub`
+- **Relay server** and **API server**: empty. The relay defaults to the ID server host; the API is Pro only.
+
+To control neptune's own desktop, set up its RustDesk app once over Screen
+Sharing (`open vnc://neptune-mbp`):
+
+1. `brew install --cask rustdesk`, open it, and enter the server settings above.
+2. Allow **Screen Recording** and **Accessibility** when it asks (System
+   Settings > Privacy & Security). Without them, sessions show a black screen
+   or ignore input.
+3. If it says the service is not running, click **Start service** (admin
+   password), so it runs after a reboot.
+4. Settings > Security > Unlock security settings > **Set permanent password**.
+   Until then only the one-time password shown in its window works.
+5. Note the ID in its main window (`<rustdesk id>` on neptune-mbp now). Other
+   devices connect to that ID with the permanent password.
+
+When the app first registers, its log shows one `UUID_MISMATCH` and then
+registers its key; that is normal. Errors about port 21114 (`/api/...`) are
+the Pro-only API and can be ignored.

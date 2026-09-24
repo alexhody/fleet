@@ -35,6 +35,11 @@ check tailscaled    yes   "$(pgrep -x tailscaled >/dev/null && echo yes || echo 
 check tailscale-ip  yes   "$(has ip "$(tailscale ip -4 2>/dev/null)")"
 check tailscale-gui absent "$([ -d /Applications/Tailscale.app ] && echo present || echo absent)"
 
+if [ -f "$HOME/Library/LaunchAgents/com.rustdesk.hbbs.plist" ]; then  # optional, see SKILL.md section 7
+  check rustdesk-hbbs yes "$(listening 21116)"
+  check rustdesk-hbbr yes "$(listening 21117)"
+fi
+
 # Tuning
 check spotlight     off   "$(mdutil -s / 2>/dev/null | grep -q 'Indexing disabled' && echo off || echo on)"
 check maxfiles      65536 "$(launchctl limit maxfiles | awk '{print $2}')"

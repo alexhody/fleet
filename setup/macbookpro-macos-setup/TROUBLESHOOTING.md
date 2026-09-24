@@ -184,3 +184,4 @@ If the case or trackpad starts to bulge, power it off and replace the battery.
 | SSH hardening | `sudo rm /etc/ssh/sshd_config.d/000-fleet-hardening.conf` |
 | Tailscale daemon | `sudo tailscale logout; sudo brew services stop tailscale; brew uninstall tailscale` |
 | Shell PATH | delete the `FLEET_PATH_SET` block from `~/.zshenv` |
+| RustDesk server | `for b in hbbs hbbr; do launchctl bootout gui/$(id -u)/com.rustdesk.$b; rm ~/Library/LaunchAgents/com.rustdesk.$b.plist /opt/homebrew/bin/$b; done; rm -rf /opt/homebrew/var/rustdesk-server /opt/homebrew/var/log/rustdesk-server ~/Library/Caches/rustdesk-server` (deletes the key: clients need the new one after a reinstall) |
