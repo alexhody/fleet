@@ -10,7 +10,7 @@
 #                    ModemManager, notifiers, SSSD, snapd, desktop extras), zram, noatime,
 #                    tmpfs /tmp, inotify limits, BBR, thermald off, crash recovery (panic on
 #                    hang, dump to pstore, auto-reboot, NVRAM cleanup)
-#   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW
+#   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW, passwordless sudo
 #   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
 #                    non-interactive-shell PATH, agent CLIs (Claude Code,
 #                    Codex, opencode), text-console boot + don/doff toggles
@@ -37,6 +37,7 @@
 #   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits, BBR, thermald off
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
 #   GUI_ON_BOOT=1 boot straight to the desktop (default: text console; don/doff toggle it)
+#   SKIP_NOPASSWD=1 keep the sudo password prompt for ADMIN_USER
 #
 set -euo pipefail
 
@@ -78,6 +79,7 @@ SKIP_SERVICES="${SKIP_SERVICES:-0}"
 SKIP_TUNING="${SKIP_TUNING:-0}"
 DOCKER_ON="${DOCKER_ON:-0}"
 GUI_ON_BOOT="${GUI_ON_BOOT:-0}"
+SKIP_NOPASSWD="${SKIP_NOPASSWD:-0}"
 
 if [ -n "${SSH_PUBKEY_FILE:-}" ] && [ -z "${SSH_PUBKEY:-}" ]; then
   SSH_PUBKEY="$(cat "$SSH_PUBKEY_FILE")"
@@ -624,6 +626,18 @@ ufw allow in on tailscale0
 [ -n "$LAN_CIDR" ] && ufw allow from "$LAN_CIDR" to any port 22 proto tcp
 ufw --force enable
 
+if [ "$SKIP_NOPASSWD" != "1" ]; then
+  log "  3.4 passwordless sudo for $ADMIN_USER"
+  # The console login still needs the password and SSH is key-only; the docker group
+  # is root-equivalent anyway. zz- sorts last so it wins over the narrow rules below.
+  install_sudoers "zz-$ADMIN_USER-nopasswd" <<EOF
+# $ADMIN_USER runs sudo without a password (the console login still asks for one).
+$ADMIN_USER ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+else
+  warn "skipping passwordless sudo"
+fi
+
 # ========================================================= PHASE 4: WORKLOAD
 log "Phase 4 - workload tooling"
 
@@ -793,6 +807,8 @@ printf '  desktop     : gdm=%s, default=%s (use don/doff)\n' \
 printf '  wifi        : power_save=%s (NM wifi.powersave=%s)\n' \
   "$(iw dev "$(nmcli -t -f DEVICE,TYPE dev 2>/dev/null | awk -F: '$2=="wifi"{print $1; exit}')" get power_save 2>/dev/null | sed 's/.*: //')" \
   "$(grep -h '^wifi.powersave' /etc/NetworkManager/conf.d/99-wifi-powersave.conf 2>/dev/null | awk -F= '{gsub(/ /,"",$2); print $2}')"
+printf '  sudo        : %s\n' \
+  "$(sudo -u "$ADMIN_USER" sudo -n true 2>/dev/null && echo passwordless || echo password required)"
 printf '  mbpfan      : %s\n' "$(systemctl is-active mbpfan)"
 printf '  ufw         : %s\n' "$(ufw status | head -1)"
 printf '  ssd cap     : max_sectors_kb=%s (1280 = capped)\n' "$(cat /sys/block/sda/queue/max_sectors_kb 2>/dev/null)"

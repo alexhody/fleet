@@ -205,6 +205,7 @@ ssh saturn 'bash -lic "command -v node"'        # interactive: path in fnm_multi
 | panel is dark | the console blanks after 60 s idle | press a key |
 | Thunderbolt device not detected | the controller is powered down | undo below, then reboot |
 | `don`/`doff`/`dockeron`/`dockeroff` ask for a password | sudoers rule missing, or the functions differ from the rule (it matches exact commands) | `sudo -l` must list them (`/etc/sudoers.d/desktop-toggles`, `docker-toggles`); re-run setup |
+| `sudo` asks for a password | `zz-saturn-nopasswd` missing or invalid | `sudo visudo -cf /etc/sudoers.d/zz-saturn-nopasswd`; re-run setup |
 | files in `/tmp` vanished | tmpfs, wiped on boot | use `~/jobs` |
 | apt fails on `liberror-perl` | broken `noble/main` index | `sudo rm -rf /var/lib/apt/lists/* && sudo apt-get update` |
 | 5 GHz networks missing | regulatory domain is `00` | `iw reg get`; re-run setup with `COUNTRY=` |
@@ -232,6 +233,8 @@ sudo apt install apport
 sudo systemctl enable NetworkManager-wait-online.service
 # SSSD (only if you join a company/LDAP domain)
 sudo systemctl unmask sssd.service sssd-{nss,autofs,pac,pam,pam-priv,ssh,sudo}.socket
+# Passwordless sudo (don/doff/dockeron/dockeroff keep their narrow rules)
+sudo rm /etc/sudoers.d/zz-saturn-nopasswd
 # CPU undervolt (sudo undervolt prints the offset)
 sudo systemctl disable --now undervolt && sudo undervolt 0
 # Battery charge limit (sudo bclm prints the current one)

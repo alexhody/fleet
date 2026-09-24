@@ -44,6 +44,7 @@ Takes about 10 minutes. It is safe to re-run. Password SSH stays on until step 3
 | `LAN_CIDR=…` | also allow SSH from the LAN (default: Tailscale only) |
 | `DOCKER_ON=1` | Docker running at boot (default: installed, off) |
 | `GUI_ON_BOOT=1` | boot straight to the desktop (default: text console) |
+| `SKIP_NOPASSWD=1` | keep the sudo password prompt (default: passwordless sudo) |
 | `SKIP_GRUB`, `SKIP_DGPU`, `SKIP_WIFI_PS`, `SKIP_DEVICES`, `SKIP_SERVICES`, `SKIP_TUNING` | skip that part |
 
 What it sets up:
@@ -59,7 +60,7 @@ What it sets up:
 | Removed | snapd and every snap (Firefox, Snap Store, …), pinned so apt can't reinstall it (Chrome from apt is unaffected); apport | `/etc/apt/preferences.d/no-snapd` |
 | Memory/disk/net | zram swap (zstd), `noatime`, tmpfs `/tmp`, inotify 524288, BBR + `fq` | `/etc/systemd/zram-generator.conf`, `/etc/fstab`, `/etc/sysctl.d/60-fleet-perf.conf` |
 | Crash recovery | a kernel hang or oops panics, saves a dump, reboots in 10 s; dumps cleared from NVRAM once archived | `/etc/sysctl.d/61-crash-reboot.conf`, `pstore-efi-cleanup.service` |
-| Access | key-only SSH, Tailscale, UFW (tailscale0 + LAN:22) | `/etc/ssh/sshd_config.d/99-hardening.conf` |
+| Access | key-only SSH, Tailscale, UFW (tailscale0 + LAN:22), passwordless sudo (the console login still asks for the password) | `/etc/ssh/sshd_config.d/99-hardening.conf`, `/etc/sudoers.d/zz-saturn-nopasswd` |
 | Toolchain | build-essential, git, gh, tmux, rg, fd, jq, Python, Docker, fnm + Node LTS, uv | |
 | Agents | Claude Code, Codex, opencode; tool PATH above the `.bashrc` interactive guard; `~/jobs`, `~/Code` | `~/.bashrc` |
 | Shell | `don`/`doff`/`dstat` (desktop), `dockeron`/`dockeroff`/`dkstat` (Docker), no sudo password | `~/.bash_aliases`, `/etc/sudoers.d/desktop-toggles`, `/etc/sudoers.d/docker-toggles` |
@@ -116,6 +117,8 @@ Optional: `sudo pro attach <TOKEN> && sudo pro enable esm-apps esm-infra livepat
 - It boots to a text console with Wi-Fi, SSH and Tailscale up. `don` starts the
   desktop (about 5 s), `doff` stops it and turns the panel off, `dstat` reports.
   None asks for a password.
+- `sudo` never asks for a password (installs, apt). The password is only needed
+  at the text-console login after a reboot.
 - Docker stays off until `dockeron` (`dockeroff` to stop, `dkstat` for status). No
   password either. Containers don't come back after a reboot.
 - Dev servers on saturn are reachable from the laptop at `saturn-mbp:<port>`.
