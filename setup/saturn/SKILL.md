@@ -69,7 +69,7 @@ ssh saturn bash -s < setup/linux-worker/scripts/verify.sh
 ssh saturn bash -s < setup/saturn/scripts/verify.sh
 ```
 
-Git commits with the personal email from `fleet.local.md`.
+Git commits with the personal email from `credentials.md`.
 
 ## Daily use
 

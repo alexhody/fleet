@@ -8,8 +8,8 @@ machine, and `saturn/` and `neptune/` add what's specific to each host.
 ## Hosts
 
 Every host is on the personal tailnet, `<tailnet>.ts.net`. The tailnet, account
-names, IPs and git identities are in `fleet.local.md`, which is private (copy
-`fleet.local.example.md` to create it).
+names, IPs and git identities are in `credentials.md`, which is private (copy
+`credentials.example.md` to create it).
 Use full MagicDNS names.
 
 ### `jupiter-mbp` — control plane

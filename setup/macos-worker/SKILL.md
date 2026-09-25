@@ -19,7 +19,7 @@ The commands below use `U` for the admin user, `NAME` for the host name
 
 ## 0. Before you start
 
-Read `fleet.local.md` at the repo root (copy `fleet.local.example.md` if it is
+Read `credentials.md` at the repo root (copy `credentials.example.md` if it is
 missing). Before running any command, ask the user in one go for whatever it
 lacks:
 
@@ -30,7 +30,7 @@ lacks:
   and email
 - whether an Apple ID is signed in at the Mac for Xcode
 
-Offer to save new answers to `fleet.local.md`.
+Offer to save new answers to `credentials.md`.
 
 Secrets never go into chat, files, commands or this repo. The user types them
 only at the machine's own prompts: the login and sudo password (setup reads it
@@ -103,7 +103,7 @@ What it sets up:
 
 ## 3. Tailscale and key-only SSH
 
-Join the tailnet from `fleet.local.md` and approve as its Tailscale account:
+Join the tailnet from `credentials.md` and approve as its Tailscale account:
 
 ```bash
 ssh -t $U@$IP "sudo tailscale up --ssh --hostname=$NAME"   # open the printed URL, approve
@@ -155,7 +155,7 @@ ssh -t $H claude auth login            # open the URL here, paste the code back
 ssh -t $H codex login --device-auth
 ssh -t $H opencode auth login
 ssh -t $H gh auth login                # GitHub.com, HTTPS, yes to git credentials
-GIT_NAME='<git name>' GIT_EMAIL=<git email>   # fleet.local.md: work or personal email
+GIT_NAME='<git name>' GIT_EMAIL=<git email>   # credentials.md: work or personal email
 ssh $H "git config --global user.name '$GIT_NAME'; git config --global user.email $GIT_EMAIL"
 ssh $H 'claude auth status; codex login status; gh auth status'
 ```

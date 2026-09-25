@@ -1,6 +1,6 @@
-# Fleet — private values
+# Fleet — credentials and private values
 
-Copy to `fleet.local.md` (gitignored) and fill in. Setup skills read it before
+Copy to `credentials.md` (gitignored) and fill in. Setup skills read it before
 asking anything, and ask only for what's missing. Never put passwords, auth
 keys or tokens here: those are typed only at the machine's own prompts.
 
