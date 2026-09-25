@@ -1,40 +1,34 @@
 #!/usr/bin/env bash
-# setup.sh - provision a fresh Ubuntu MacBook Pro as a remote agentic-coding box.
+# setup.sh - provision an Ubuntu (or Debian) machine as a remote agentic-coding worker.
 #
-# Phases (boot params, then hardware, then remote access, then workload):
-#   1. Boot params : GRUB quirks (SSD write-size cap, IOMMU), NCQ on, noncq
-#                    fallback entry - must precede first reboot
-#   2. Hardware    : apt helpers, dGPU off, fans, battery charge limit, CPU undervolt, Wi-Fi
-#                    reg domain, Wi-Fi power-save off, no-sleep, unused devices off (Bluetooth,
-#                    camera, SD reader, Thunderbolt) and unused services off (CUPS,
-#                    ModemManager, notifiers, SSSD, snapd, desktop extras), zram, noatime,
-#                    tmpfs /tmp, inotify limits, BBR, thermald off, crash recovery (panic on
-#                    hang, dump to pstore, auto-reboot, NVRAM cleanup)
-#   3. Remote      : base pkgs, key-only SSH, Tailscale, UFW, passwordless sudo
-#   4. Workload    : dev toolchain, Docker (off on demand), Node/uv,
-#                    non-interactive-shell PATH, agent CLIs (Claude Code,
-#                    Codex, opencode), text-console boot + don/doff toggles
+# Phases:
+#   1. Boot     : quiet text console that blanks after 60 s, no splash
+#   2. System   : Wi-Fi reg domain and power-save off, no sleep, unused services
+#                 off (CUPS, ModemManager, notifiers, SSSD, snapd, desktop extras),
+#                 zram, noatime, tmpfs /tmp, inotify limits, BBR, crash recovery
+#                 (panic on hang, dump to pstore, auto-reboot, NVRAM cleanup)
+#   3. Remote   : base pkgs, SSH, Tailscale, UFW, passwordless sudo
+#   4. Workload : dev toolchain, Docker (off on demand), Node/uv,
+#                 non-interactive-shell PATH, agent CLIs (Claude Code,
+#                 Codex, opencode), text-console boot + don/doff toggles
+#
+# Machine quirks (drivers, fans, firmware) live in setup/<host>/scripts. Run
+# those after this script, before the first reboot.
 #
 # Usage:
-#   sudo ADMIN_USER=saturn \
+#   sudo ADMIN_USER=<user> \
 #        SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" \
-#        LAN_CIDR=192.168.x.0/24 \
 #        COUNTRY=<cc> \
 #        bash setup.sh
 #
 # Options (env):
 #   ADMIN_USER    login user to configure (default: invoking sudo user)
 #   SSH_PUBKEY    public key line to authorize (or use SSH_PUBKEY_FILE)
-#   LAN_CIDR      LAN subnet allowed to SSH (default: none -> Tailscale only)
 #   COUNTRY       2-letter Wi-Fi country code (default: skip reg-domain step)
-#   CHARGE_LIMIT  stop charging the battery at this % (default 80; 100 = no limit)
-#   UNDERVOLT_MV  CPU voltage offset in mV (default -65; 0 = stock)
-#   SKIP_DGPU=1   do not set up the AMD dGPU power-off
-#   SKIP_GRUB=1   do not touch GRUB cmdline
+#   SKIP_GRUB=1   do not touch the GRUB cmdline
 #   SKIP_WIFI_PS=1 do not disable Wi-Fi power-save (keep battery over latency)
-#   SKIP_DEVICES=1 do not turn off Bluetooth/camera/SD reader/Thunderbolt
 #   SKIP_SERVICES=1 do not turn off CUPS/ModemManager/notifiers/SSSD/snaps/desktop extras
-#   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits, BBR, thermald off
+#   SKIP_TUNING=1  do not set up zram, noatime, tmpfs /tmp, inotify limits, BBR
 #   DOCKER_ON=1   leave Docker enabled at boot (default: installed but off)
 #   GUI_ON_BOOT=1 boot straight to the desktop (default: text console; don/doff toggle it)
 #   SKIP_NOPASSWD=1 keep the sudo password prompt for ADMIN_USER
@@ -56,10 +50,21 @@ install_sudoers() {
   rm -f "$tmp"
 }
 
+# grub_add <param>...: add kernel params to GRUB_CMDLINE_LINUX_DEFAULT unless present.
+grub_add() {
+  local line t
+  line="$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' /etc/default/grub)"
+  for t in "$@"; do
+    case " $line " in *" $t "*) ;; *) line="${line:+$line }$t" ;; esac
+  done
+  sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$line\"|" /etc/default/grub
+}
+
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run as root (sudo)." >&2
   exit 1
 fi
+command -v apt-get >/dev/null || { echo "Ubuntu or Debian (apt) only." >&2; exit 1; }
 
 ADMIN_USER="${ADMIN_USER:-${SUDO_USER:-}}"
 if [ -z "${ADMIN_USER:-}" ] || ! id "$ADMIN_USER" >/dev/null 2>&1; then
@@ -67,14 +72,9 @@ if [ -z "${ADMIN_USER:-}" ] || ! id "$ADMIN_USER" >/dev/null 2>&1; then
   exit 1
 fi
 ADMIN_HOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
-LAN_CIDR="${LAN_CIDR:-}"
 COUNTRY="${COUNTRY:-}"
-CHARGE_LIMIT="${CHARGE_LIMIT:-80}"
-UNDERVOLT_MV="${UNDERVOLT_MV:--65}"
-SKIP_DGPU="${SKIP_DGPU:-0}"
 SKIP_GRUB="${SKIP_GRUB:-0}"
 SKIP_WIFI_PS="${SKIP_WIFI_PS:-0}"
-SKIP_DEVICES="${SKIP_DEVICES:-0}"
 SKIP_SERVICES="${SKIP_SERVICES:-0}"
 SKIP_TUNING="${SKIP_TUNING:-0}"
 DOCKER_ON="${DOCKER_ON:-0}"
@@ -86,275 +86,42 @@ if [ -n "${SSH_PUBKEY_FILE:-}" ] && [ -z "${SSH_PUBKEY:-}" ]; then
 fi
 SSH_PUBKEY="${SSH_PUBKEY:-}"
 
-IS_MAC=0
-grep -q 'MacBookPro' /sys/class/dmi/id/product_name 2>/dev/null && IS_MAC=1
-
 log "Phase 0 - preflight"
 echo "  user : $ADMIN_USER ($ADMIN_HOME)"
 echo "  DMI  : $(cat /sys/class/dmi/id/product_name 2>/dev/null || echo unknown)"
-echo "  mac  : $IS_MAC"
 
-# ======================================================== PHASE 1: BOOT PARAMS
-log "Phase 1 - GRUB boot parameters"
-if [ "$SKIP_GRUB" != "1" ] && [ "$IS_MAC" = "1" ]; then
+# ============================================================== PHASE 1: BOOT
+log "Phase 1 - boot: quiet text console"
+if [ "$SKIP_GRUB" != "1" ] && [ -f /etc/default/grub ]; then
   cp -n /etc/default/grub /etc/default/grub.bak 2>/dev/null || true
-  sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 libata.force=max_sec=2560 intel_iommu=off consoleblank=60"|' /etc/default/grub
-  # One-boot escape if NCQ ever misbehaves: `grub-reboot noncq-fallback && reboot`
-  if ! grep -q noncq-fallback /etc/grub.d/40_custom; then
-    BOOT_UUID=$(findmnt -no UUID /boot 2>/dev/null || findmnt -no UUID /)
-    KP=$(mountpoint -q /boot && echo "" || echo /boot)
-    cat >> /etc/grub.d/40_custom <<EOF
-  
-  menuentry 'Ubuntu (noncq fallback)' --id noncq-fallback {
-  	insmod gzio
-  	insmod part_gpt
-  	insmod ext2
-  	search --no-floppy --fs-uuid --set=root $BOOT_UUID
-  	linux	$KP/vmlinuz root=$(findmnt -no SOURCE /) ro quiet libata.force=noncq intel_iommu=off
-  	initrd	$KP/initrd.img
-  }
-EOF
-  fi
+  # splash holds boot in plymouth until GDM starts, which a text console never does.
+  sed -i '/^GRUB_CMDLINE_LINUX_DEFAULT=/s/ *\bsplash\b//' /etc/default/grub
+  # consoleblank: with the lid ignored, a lit panel keeps the CPU out of deep idle.
+  grub_add quiet loglevel=3 consoleblank=60
   update-grub
   echo "  set: $(grep '^GRUB_CMDLINE_LINUX_DEFAULT' /etc/default/grub)"
 else
   warn "skipping GRUB changes"
 fi
 
-if [ "$IS_MAC" = "1" ]; then
-  log "  1.1 SSD write-size cap (1280 KiB, kernel 7.0 regression)"
-  cat > /etc/udev/rules.d/60-apple-ssd-max-sectors.rules <<'EOF'
-# Apple SSD SM0xxxG (firmware BXW1SA0Q) throws host bus errors and drops the root fs
-# read-only on writes over 1280 KiB since kernel 7.0 raised the default to 4 MiB.
-# Second guard: libata.force=max_sec=2560 caps it in the kernel, but only while it is
-# the sole force entry (libata applies the first match; noncq would win).
-ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]", ATTRS{model}=="APPLE SSD SM0*", ATTR{queue/max_sectors_kb}="1280"
+# Keep kernel error noise off the text console; the journal still has it.
+cat > /etc/sysctl.d/20-quiet-console.conf <<'EOF'
+# Keep kernel error messages off the text console; they still go to the journal.
+# Loads after Ubuntu's 10-console-messages.conf, which would reset it to 4.
+kernel.printk = 3 4 1 7
 EOF
-  udevadm control --reload
-  udevadm trigger --action=change --subsystem-match=block --sysname-match=sda
-fi
+sysctl -q -p /etc/sysctl.d/20-quiet-console.conf
 
-# ============================================================ PHASE 2: HARDWARE
-log "Phase 2 - hardware"
+# ============================================================ PHASE 2: SYSTEM
+log "Phase 2 - system"
 
-log "  2.0 apt reindex + hardware helpers"
+log "  2.1 apt reindex + iw"
 rm -rf /var/lib/apt/lists/*
 apt-get update
-apt-get install -y iw mbpfan msr-tools
-
-if [ "$SKIP_DGPU" != "1" ] && [ "$IS_MAC" = "1" ]; then
-  log "  2.1 AMD dGPU: bind to amdgpu, power off through the gmux at boot"
-  cat > /etc/modprobe.d/blacklist-amdgpu.conf <<'EOF'
-# MacBookPro11,5: bind the R9 M370X to amdgpu (Cape Verde = SI) so it registers a
-# vga_switcheroo client; dgpu-off.service then cuts its power through the gmux.
-blacklist radeon
-options radeon si_support=0
-options amdgpu si_support=1
-EOF
-  cat > /usr/local/sbin/dgpu-off <<'EOF'
-#!/bin/sh
-# Power off the AMD dGPU through the gmux once amdgpu has registered with vga_switcheroo.
-SW=/sys/kernel/debug/vgaswitcheroo/switch
-mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug
-for i in $(seq 1 60); do [ -e "$SW" ] && break; sleep 0.5; done
-[ -e "$SW" ] || { echo "vgaswitcheroo switch never appeared" >&2; exit 1; }
-grep -q '^2:DIS: :Off' "$SW" 2>/dev/null && { echo "dGPU already off"; exit 0; }
-echo IGD > "$SW"
-echo OFF > "$SW"
-sleep 1
-grep 'DIS:' "$SW"
-EOF
-  chmod +x /usr/local/sbin/dgpu-off
-  cat > /etc/systemd/system/dgpu-off.service <<'EOF'
-[Unit]
-Description=Power off AMD dGPU via apple-gmux (vga_switcheroo)
-After=systemd-modules-load.service
-DefaultDependencies=no
-Before=multi-user.target display-manager.service gdm.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/sbin/dgpu-off
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable dgpu-off.service
-  cat > /etc/udev/rules.d/72-dgpu-ignore.rules <<'EOF'
-# MacBookPro11,5: dgpu-off.service cuts the AMD dGPU's power at boot. Keep the desktop
-# from ever opening it, or GNOME Shell may pick it as primary GPU and hang when it vanishes.
-SUBSYSTEM=="drm", KERNELS=="0000:01:00.0", TAG+="mutter-device-ignore", TAG-="seat", TAG-="master-of-seat", TAG-="uaccess"
-EOF
-  update-initramfs -u
-else
-  warn "skipping dGPU power-off"
-fi
-
-log "  2.2 fan control (mbpfan)"
-systemctl enable --now mbpfan
-
-if [ "$IS_MAC" = "1" ]; then
-  log "  2.2b battery charge limit ${CHARGE_LIMIT}%"
-  # Always on AC: a battery held full and hot wears fastest and swells. The SMC
-  # keeps the limit across reboots, but an SMC reset or a battery unplug puts it
-  # back to 100, so battery-limit.service sets it again on every boot.
-  cat > /usr/local/sbin/bclm <<'EOF'
-#!/usr/bin/env python3
-# Read or set the battery charge limit (SMC key BCLM) on Intel Macs.
-# Usage: bclm         print the limit
-#        bclm 80      stop charging at 80 %
-import os, sys, time
-
-DATA, CMD = 0x300, 0x304
-READ, WRITE = 0x10, 0x11
-AWAITING_DATA, IB_CLOSED, BUSY = 1, 2, 4
-
-fd = os.open("/dev/port", os.O_RDWR)
-inb = lambda port: os.pread(fd, 1, port)[0]
-outb = lambda val, port: os.pwrite(fd, bytes([val]), port)
-
-def wait_status(val, mask):
-    us = 8
-    for i in range(24):
-        if inb(CMD) & mask == val:
-            return
-        time.sleep(us / 1e6)
-        if i > 9:
-            us <<= 1
-    raise IOError("SMC not responding")
-
-def send_byte(b, port):
-    wait_status(0, IB_CLOSED)
-    wait_status(BUSY, BUSY)
-    outb(b, port)
-
-def send_command(c):
-    wait_status(0, IB_CLOSED)
-    outb(c, CMD)
-
-def start(cmd, key, length):
-    try:
-        wait_status(0, BUSY)
-    except IOError:
-        send_command(READ)
-        wait_status(0, BUSY)
-    send_command(cmd)
-    for ch in key.encode():
-        send_byte(ch, DATA)
-    send_byte(length, DATA)
-
-def read_key(key):
-    start(READ, key, 1)
-    wait_status(AWAITING_DATA | BUSY, AWAITING_DATA | BUSY)
-    val = inb(DATA)
-    for _ in range(16):
-        time.sleep(8 / 1e6)
-        if not inb(CMD) & AWAITING_DATA:
-            break
-        inb(DATA)
-    wait_status(0, BUSY)
-    return val
-
-def write_key(key, val):
-    start(WRITE, key, 1)
-    send_byte(val, DATA)
-    wait_status(0, BUSY)
-
-if len(sys.argv) > 1:
-    limit = int(sys.argv[1])
-    if not 20 <= limit <= 100:
-        sys.exit("limit must be 20-100")
-    write_key("BCLM", limit)
-print(read_key("BCLM"))
-EOF
-  chmod 755 /usr/local/sbin/bclm
-  # Runs before mbpfan so their SMC accesses can't interleave.
-  cat > /etc/systemd/system/battery-limit.service <<EOF
-[Unit]
-Description=Stop charging the battery at ${CHARGE_LIMIT}%
-Before=mbpfan.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/sbin/bclm ${CHARGE_LIMIT}
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable battery-limit.service
-  systemctl stop mbpfan
-  systemctl restart battery-limit.service || warn "could not set the charge limit"
-  systemctl start mbpfan
-fi
-
-if [ "$IS_MAC" = "1" ] && [ "$UNDERVOLT_MV" != "0" ]; then
-  log "  2.2c CPU undervolt ${UNDERVOLT_MV} mV"
-  # The CPU runs at its 100 C limit under load. Less voltage means less heat, so it holds
-  # a higher clock there: -75 mV passed 2 h of mprime and bit-identical builds; -65 keeps
-  # a margin. Writes to the voltage MSR are allowed without a kernel warning.
-  echo "options msr allow_writes=on" > /etc/modprobe.d/msr-writes.conf
-  cat > /usr/local/sbin/undervolt <<'EOF'
-#!/bin/bash
-# Read or set the CPU voltage offset (MSR 0x150) on Haswell. Core and cache share one
-# rail, so both get the same offset. The offset resets on every reboot.
-# Usage: undervolt          print the offset in mV
-#        undervolt -65      set it
-#        undervolt boot -65 set it at boot, unless the last boot crashed while undervolted
-#        undervolt stop     mark a clean shutdown
-set -e
-FLAG=/var/lib/undervolt/active
-modprobe msr
-get() {
-  wrmsr -p0 0x150 0x8000001000000000
-  local o=$(( (0x$(rdmsr -p0 0x150) >> 21) & 0x7ff ))
-  [ $o -ge 1024 ] && o=$((o - 2048))
-  echo $(( (o * 1000 - 512) / 1024 ))
-}
-set_mv() {
-  [ "$1" -le 0 ] && [ "$1" -ge -100 ] || { echo "offset must be -100 to 0 mV" >&2; exit 1; }
-  local o=0 p
-  [ "$1" -ne 0 ] && o=$(( ($1 * 1024 - 500) / 1000 ))
-  for p in 0 2; do wrmsr -a 0x150 "$(printf '0x80000%d11%08x' $p $(( (o & 0x7ff) << 21 )))"; done
-}
-case "${1:-}" in
-  "") get ;;
-  boot)
-    # The flag is removed on a clean shutdown. If it's still here, the last boot ended in
-    # a crash while undervolted: stay at stock this once, so a bad offset can't loop.
-    if [ -e $FLAG ]; then
-      rm -f $FLAG; echo "last boot crashed while undervolted; staying at stock"
-    else
-      set_mv "$2"; mkdir -p ${FLAG%/*}; get | tee $FLAG; sync
-    fi ;;
-  stop) rm -f $FLAG ;;
-  *) set_mv "$1"; get ;;
-esac
-EOF
-  chmod 755 /usr/local/sbin/undervolt
-  cat > /etc/systemd/system/undervolt.service <<EOF
-[Unit]
-Description=Undervolt the CPU by ${UNDERVOLT_MV} mV
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/sbin/undervolt boot ${UNDERVOLT_MV}
-ExecStop=/usr/local/sbin/undervolt stop
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable undervolt.service
-  systemctl restart undervolt.service || warn "could not set the undervolt"
-fi
+apt-get install -y iw
 
 if [ -n "$COUNTRY" ]; then
-  log "  2.3 Wi-Fi regulatory domain = $COUNTRY"
+  log "  2.2 Wi-Fi regulatory domain = $COUNTRY"
   iw reg set "$COUNTRY" || true
   echo "options cfg80211 ieee80211_regdom=$COUNTRY" > /etc/modprobe.d/cfg80211-regdom.conf
   cat > /etc/systemd/system/wifi-regdom.service <<EOF
@@ -374,8 +141,8 @@ EOF
   update-initramfs -u
 fi
 
-if [ "$SKIP_WIFI_PS" != "1" ] && [ "$IS_MAC" = "1" ]; then
-  log "  2.3b Wi-Fi power-save off (latency; negligible cost on AC)"
+if [ "$SKIP_WIFI_PS" != "1" ]; then
+  log "  2.3 Wi-Fi power-save off (latency; negligible cost on AC)"
   WIFI_IF="$(nmcli -t -f DEVICE,TYPE dev 2>/dev/null | awk -F: '$2=="wifi"{print $1; exit}')"
   # Global default for future connections: 2 = disable (0=default,1=ignore,2=disable,3=enable)
   cat > /etc/NetworkManager/conf.d/99-wifi-powersave.conf <<'EOF'
@@ -416,53 +183,11 @@ sudo -u "$ADMIN_USER" -H bash -lc '
   gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null || true
 ' || true
 
-if [ "$SKIP_DEVICES" != "1" ] && [ "$IS_MAC" = "1" ]; then
-  log "  2.5 turning off unused devices (Bluetooth, camera, SD reader, Thunderbolt)"
-  # Bluetooth: stop service + soft-block radio (persists via systemd-rfkill)
-  systemctl disable --now bluetooth 2>/dev/null || true
-  rfkill block bluetooth 2>/dev/null || true
-  # ...and switch the controller (05ac:8290) off: while blocked it times out on every
-  # USB suspend attempt and prints "usb 1-8: Failed to suspend device, error -110".
-  printf '%s\n' \
-    '# Internal Bluetooth (Broadcom 05ac:8290): unused, and while rfkill-blocked it times out' \
-    '# on every USB suspend attempt ("usb 1-8: Failed to suspend device, error -110").' \
-    'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="8290", ATTR{authorized}="0"' \
-    > /etc/udev/rules.d/70-bluetooth-off.rules
-
-  # FaceTime HD camera: never bind its driver
-  echo "blacklist uvcvideo" > /etc/modprobe.d/disable-camera.conf
-
-  # SD card reader (Apple 05ac:8406) and Bluetooth (05ac:8290): deauthorize now + persist
-  for dev in /sys/bus/usb/devices/*/; do
-    case "$(cat "$dev/idVendor" 2>/dev/null):$(cat "$dev/idProduct" 2>/dev/null)" in
-      05ac:8406|05ac:8290) echo 0 > "$dev/authorized" 2>/dev/null || true ;;
-    esac
-  done
-  printf '%s\n' 'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="8406", ATTR{authorized}="0"' \
-    > /etc/udev/rules.d/70-cardreader-off.rules
-
-  # Thunderbolt: nothing is plugged in, yet with its driver bound the controller stays
-  # powered and holds the CPU out of deep idle (~2.5 W). Without a driver it may sleep,
-  # and the Mac then cuts its power. The internal USB devices may autosuspend too (a
-  # keypress wakes the keyboard), so the USB controller can sleep.
-  echo "blacklist thunderbolt" > /etc/modprobe.d/thunderbolt-off.conf
-  printf '%s\n' \
-    '# Unused Thunderbolt controller (8086:156c, no driver) and the USB controller (8086:8c31)' \
-    '# may sleep; the internal keyboard/trackpad, Bluetooth and SD reader may autosuspend.' \
-    'ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x8086", ATTR{device}=="0x156c|0x8c31", ATTR{power/control}="auto"' \
-    'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="0274|8290|8406", ATTR{power/control}="auto"' \
-    > /etc/udev/rules.d/71-idle-power.rules
-  update-initramfs -u
-  udevadm control --reload-rules
-else
-  warn "skipping unused-device power-off"
-fi
-
 if [ "$SKIP_SERVICES" != "1" ]; then
-  log "  2.6 disabling unused services (printing, modem, notifiers, snaps, desktop extras)"
+  log "  2.5 disabling unused services (printing, modem, notifiers, snaps, desktop extras)"
   # CUPS: printing daemon + network printer discovery (no printers configured)
   systemctl disable --now cups.path cups.socket cups.service cups-browsed.service 2>/dev/null || true
-  # ModemManager: Wi-Fi only, no WWAN modem
+  # ModemManager: no WWAN modem on a worker
   systemctl disable --now ModemManager.service 2>/dev/null || true
   # Cosmetic update notices + MOTD news (keep unattended-upgrades for security)
   systemctl disable --now motd-news.timer update-notifier-download.timer update-notifier-motd.timer 2>/dev/null || true
@@ -477,7 +202,7 @@ if [ "$SKIP_SERVICES" != "1" ]; then
   DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq firefox snapd >/dev/null 2>&1 || true
   rm -rf /var/lib/snapd /var/cache/snapd /snap
   cat > /etc/apt/preferences.d/no-snapd <<'EOF'
-# Saturn has no snap apps. Stop apt from pulling snapd back in as a dependency.
+# This worker has no snap apps. Stop apt from pulling snapd back in as a dependency.
 # To install a snap again: delete this file, then apt install snapd.
 Package: snapd
 Pin: release *
@@ -485,10 +210,13 @@ Pin-Priority: -1
 EOF
   # Apport (crash reports to Ubuntu): kernel crashes already go to pstore.
   DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq apport apport-gtk apport-core-dump-handler >/dev/null 2>&1 || true
-  # Desktop extras with no job on a lid-closed worker: colour profiles, screen
-  # sharing, mDNS, light sensor, crash reporters, a second syslog, GPU switching,
-  # firmware update checks (Apple ships none for these Macs through fwupd).
-  for u in colord.service gnome-remote-desktop.service avahi-daemon.service avahi-daemon.socket \
+  # avahi (mDNS) stays on: it answers <name>.local, the LAN name that follows the network.
+  systemctl unmask avahi-daemon.service avahi-daemon.socket 2>/dev/null || true
+  systemctl enable --now avahi-daemon.socket avahi-daemon.service 2>/dev/null || true
+  # Desktop extras with no job on a headless worker: colour profiles, screen
+  # sharing, light sensor, crash reporters, a second syslog, GPU switching,
+  # firmware update checks (run `fwupdmgr` by hand when wanted).
+  for u in colord.service gnome-remote-desktop.service \
            iio-sensor-proxy.service kerneloops.service rsyslog.service \
            switcheroo-control.service fwupd-refresh.timer; do
     systemctl disable --now "$u" 2>/dev/null || true
@@ -501,7 +229,7 @@ else
 fi
 
 if [ "$SKIP_TUNING" != "1" ]; then
-  log "  2.7 zram swap, noatime, tmpfs /tmp, inotify limits"
+  log "  2.6 zram swap, noatime, tmpfs /tmp, inotify limits"
   apt-get install -y systemd-zram-generator
   cat > /etc/systemd/zram-generator.conf <<'EOF'
 # Compressed RAM swap; the 4 GB /swap.img stays as a low-priority last resort.
@@ -523,24 +251,17 @@ vm.page-cluster = 0
 # File watchers (node, vite, tsc) fail silently on large repos at the default 65536.
 fs.inotify.max_user_watches = 524288
 fs.inotify.max_user_instances = 1024
-# BBR keeps queues short: ~38% less lag and half the retransmits while saturn sends
+# BBR keeps queues short: ~38% less lag and half the retransmits when sending
 # over Wi-Fi. fq paces its packets.
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
   sysctl -p /etc/sysctl.d/60-fleet-perf.conf
-  # thermald has no config for Macs: its defaults halve the power limit and inject
-  # idle time, which made sustained builds ~18% slower. The CPU still throttles
-  # itself at 100 C and mbpfan runs the fans.
-  if [ "$IS_MAC" = "1" ]; then
-    systemctl disable --now thermald 2>/dev/null || true
-    systemctl mask thermald 2>/dev/null || true
-  fi
 else
   warn "skipping memory/disk tuning"
 fi
 
-log "  2.8 crash recovery: panic on a kernel hang, save a dump, reboot in 10 s"
+log "  2.7 crash recovery: panic on a kernel hang, save a dump, reboot in 10 s"
 cat > /etc/sysctl.d/61-crash-reboot.conf <<'EOF'
 # Unattended worker: turn a real kernel hang or oops into a panic, which saves a
 # dump to EFI pstore (archived to /var/lib/systemd/pstore on next boot), then reboot.
@@ -553,10 +274,10 @@ kernel.hung_task_timeout_secs = 300
 kernel.hung_task_panic = 1
 EOF
 sysctl -p /etc/sysctl.d/61-crash-reboot.conf >/dev/null
-if [ "$IS_MAC" = "1" ]; then
+if [ -d /sys/firmware/efi/efivars ]; then
   cat > /usr/local/sbin/pstore-efi-cleanup <<'EOF'
 #!/bin/sh
-# systemd-pstore archives kernel crash dumps but leaves them in the Mac's NVRAM, which
+# systemd-pstore archives kernel crash dumps but leaves them in EFI NVRAM, which
 # also holds boot settings. Remove each dump once its archived copy exists on disk.
 for f in /sys/firmware/efi/efivars/dump-type0-*; do
   [ -e "$f" ] || continue
@@ -592,7 +313,8 @@ apt-get install -y openssh-server ufw curl
 
 log "  3.1 SSH (passwords stay ON until a key is proven)"
 install -d /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/99-hardening.conf <<'EOF'
+# Left alone once it exists, so a re-run can't turn password auth back on.
+[ -f /etc/ssh/sshd_config.d/99-hardening.conf ] || cat > /etc/ssh/sshd_config.d/99-hardening.conf <<'EOF'
 PermitRootLogin no
 PubkeyAuthentication yes
 PasswordAuthentication yes
@@ -619,11 +341,15 @@ log "  3.2 Tailscale"
 command -v tailscale >/dev/null 2>&1 || curl -fsSL https://tailscale.com/install.sh | sh
 systemctl enable --now tailscaled
 
-log "  3.3 UFW (SSH via Tailscale${LAN_CIDR:+ + $LAN_CIDR})"
+log "  3.3 UFW (everything via Tailscale; SSH and mDNS from any private LAN)"
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow in on tailscale0
-[ -n "$LAN_CIDR" ] && ufw allow from "$LAN_CIDR" to any port 22 proto tcp
+# Private ranges rather than one subnet, so LAN SSH works on whatever network it joins.
+for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+  ufw allow from "$net" to any port 22 proto tcp
+  ufw allow from "$net" to any port 5353 proto udp
+done
 ufw --force enable
 
 if [ "$SKIP_NOPASSWD" != "1" ]; then
@@ -738,24 +464,27 @@ sudo -u "$ADMIN_USER" -H bash -c '
 ' || warn "agent CLI install failed; rerun the installers as $ADMIN_USER"
 
 log "  4.3 don/doff/dstat toggles"
+# doff also turns the panel off. With no backlight the tee lines fail quietly.
+BL="$(ls -d /sys/class/backlight/* 2>/dev/null | head -1)"
+BL="${BL:-/sys/class/backlight/none}"
 grep -q 'doff()' "$ADMIN_HOME/.bash_aliases" 2>/dev/null || \
-sudo -u "$ADMIN_USER" -H bash -c 'cat >> "$HOME/.bash_aliases" <<'"'"'EOF'"'"'
+sudo -u "$ADMIN_USER" -H BL="$BL" bash -c 'cat >> "$HOME/.bash_aliases" <<EOF
 # Desktop session toggles
 unalias don doff 2>/dev/null
-BL=/sys/class/backlight/gmux_backlight
-BL_STATE=$HOME/.doff_brightness
+BL=$BL
+BL_STATE=\$HOME/.doff_brightness
 
 don() {
     sudo systemctl start gdm
-    if [ -f "$BL_STATE" ]; then
-        echo 0 | sudo tee "$BL/bl_power" >/dev/null
-        sudo tee "$BL/brightness" < "$BL_STATE" >/dev/null
+    if [ -f "\$BL_STATE" ]; then
+        echo 0 | sudo tee "\$BL/bl_power" >/dev/null
+        sudo tee "\$BL/brightness" < "\$BL_STATE" >/dev/null
     fi
 }
 
 doff() {
-    cat "$BL/brightness" > "$BL_STATE" 2>/dev/null
-    echo 1 | sudo tee "$BL/bl_power" >/dev/null
+    cat "\$BL/brightness" > "\$BL_STATE" 2>/dev/null
+    echo 1 | sudo tee "\$BL/bl_power" >/dev/null
     sudo systemctl stop gdm
 }
 
@@ -766,17 +495,8 @@ EOF' || warn "could not write $ADMIN_USER shell aliases"
 install_sudoers desktop-toggles <<EOF
 # don/doff (~/.bash_aliases) toggle the desktop without a password prompt.
 $ADMIN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start gdm, /usr/bin/systemctl stop gdm, \\
-    /usr/bin/tee /sys/class/backlight/gmux_backlight/bl_power, /usr/bin/tee /sys/class/backlight/gmux_backlight/brightness
+    /usr/bin/tee $BL/bl_power, /usr/bin/tee $BL/brightness
 EOF
-
-# Keep kernel error noise (Wi-Fi firmware notes, the dGPU's EDID probe) off the text
-# console; the journal still has it. Must sort after Ubuntu's 10-console-messages.conf.
-cat > /etc/sysctl.d/20-quiet-console.conf <<'EOF'
-# Keep kernel error messages off the text console; they still go to the journal.
-# Loads after Ubuntu's 10-console-messages.conf, which would reset it to 4.
-kernel.printk = 3 4 1 7
-EOF
-sysctl -q -p /etc/sysctl.d/20-quiet-console.conf
 
 if [ "$GUI_ON_BOOT" = "1" ]; then
   log "  4.4 boot to the desktop (GDM); 'doff' stops it"
@@ -794,10 +514,6 @@ printf '  sshd        : %s / %s\n' "$(systemctl is-active ssh)" "$(systemctl is-
 printf '  docker      : %s (service %s; use dockeron/dockeroff)\n' \
   "$(docker --version 2>/dev/null | sed 's/Docker version //;s/,.*//' || echo missing)" \
   "$(systemctl is-active docker 2>/dev/null)"
-printf '  devices off : bluetooth=%s camera=%s sd-reader=%s\n' \
-  "$(rfkill list bluetooth 2>/dev/null | grep -q 'Soft blocked: yes' && echo yes || echo no)" \
-  "$(lsmod | grep -q '^uvcvideo' && echo no || echo yes)" \
-  "$(lsblk -o NAME 2>/dev/null | grep -qx 'sdb' && echo no || echo yes)"
 printf '  services off: cups=%s modemmanager=%s motd-news=%s\n' \
   "$(systemctl is-active cups 2>/dev/null)" \
   "$(systemctl is-active ModemManager 2>/dev/null)" \
@@ -809,17 +525,14 @@ printf '  wifi        : power_save=%s (NM wifi.powersave=%s)\n' \
   "$(grep -h '^wifi.powersave' /etc/NetworkManager/conf.d/99-wifi-powersave.conf 2>/dev/null | awk -F= '{gsub(/ /,"",$2); print $2}')"
 printf '  sudo        : %s\n' \
   "$(sudo -u "$ADMIN_USER" sudo -n true 2>/dev/null && echo passwordless || echo password required)"
-printf '  mbpfan      : %s\n' "$(systemctl is-active mbpfan)"
 printf '  ufw         : %s\n' "$(ufw status | head -1)"
-printf '  ssd cap     : max_sectors_kb=%s (1280 = capped)\n' "$(cat /sys/block/sda/queue/max_sectors_kb 2>/dev/null)"
 printf '  tuning      : zram=%s tmp.mount=%s inotify=%s (zram + /tmp after reboot)\n' \
   "$([ -f /etc/systemd/zram-generator.conf ] && echo configured || echo skipped)" \
   "$(systemctl is-enabled tmp.mount 2>/dev/null || echo skipped)" \
   "$(sysctl -n fs.inotify.max_user_watches)"
 printf '  crash       : panic reboot after %ss, NVRAM cleanup %s\n' "$(sysctl -n kernel.panic)" "$(systemctl is-enabled pstore-efi-cleanup 2>/dev/null || echo skipped)"
-printf '  dgpu-off    : %s (powers the dGPU off after reboot)\n' "$(systemctl is-enabled dgpu-off 2>/dev/null || echo skipped)"
 echo
-echo "NEXT (see SKILL.md steps 3-5):"
+echo "NEXT: run the machine script if it has one (setup/<host>/scripts), then SKILL.md steps 3-6:"
 echo "  1. sudo tailscale up            # authenticate, note the 100.x IP"
 echo "  2. verify key login from the client, then disable password auth (see above)"
 echo "  3. reboot, then run scripts/verify.sh from the client"

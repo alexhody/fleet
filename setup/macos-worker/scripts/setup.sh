@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# setup.sh - provision an Apple Silicon MacBook Pro on macOS as a remote
-# agentic-coding and mobile-testing worker (the neptune worker).
+# setup.sh - provision an Apple Silicon Mac on macOS as a remote
+# agentic-coding and mobile-testing worker.
 #
 # Phases:
 #   0. Preflight : checks, sudo keep-alive, Homebrew
@@ -18,14 +18,14 @@
 # the sudo password once and keeps it alive until it exits.
 #
 # Usage (from the control laptop):
-#   ssh -t neptune@<ip> 'MAC_NAME=neptune-mbp SSH_PUBKEY="ssh-ed25519 AAAA..." bash ~/setup.sh'
+#   ssh -t <user>@<ip> 'MAC_NAME=<name> SSH_PUBKEY="ssh-ed25519 AAAA..." bash ~/setup.sh'
 #
 # Options (env):
 #   MAC_NAME        computer / Bonjour / host name (default: current LocalHostName)
 #   SSH_PUBKEY      public key line to authorize (or SSH_PUBKEY_FILE)
 #   AUTOLOGIN=0     do not set up automatic login (default: set it, asks for the login password)
 #   ANDROID_STUDIO=0  skip the Android Studio app (SDK + emulator are still installed)
-#   ANDROID_PACKAGES  sdkmanager packages (default: this worker's set, see below)
+#   ANDROID_PACKAGES  sdkmanager packages (default: the set below)
 #   AVD_NAME / AVD_DEVICE / AVD_IMAGE / AVD_RAM   emulator to create if missing
 #   NPM_GLOBALS     global npm packages (default: "@swmansion/argent eas-cli vercel")
 #   ORBSTACK=1      also install OrbStack (Docker runtime; default: skip)
@@ -198,7 +198,7 @@ EOF
     sudo rm -rf /Applications/Tailscale.app
   fi
   brew_need tailscale
-  if pgrep -x tailscaled >/dev/null; then
+  if ps -axco comm | grep -qx tailscaled; then  # pgrep can't see root processes
     echo "   tailscaled running"
   else
     sudo brew services start tailscale
@@ -364,7 +364,7 @@ printf '  xcode      : %s\n' "$(xcode-select -p)"
 printf '  java 17    : %s\n' "$(/usr/libexec/java_home -v 17 2>/dev/null || echo missing)"
 printf '  avds       : %s\n' "$("$ANDROID_HOME/emulator/emulator" -list-avds 2>/dev/null | xargs)"
 echo
-echo "NEXT (see SKILL.md steps 3-5):"
+echo "NEXT (see SKILL.md steps 3-6):"
 echo "  1. sudo tailscale up --ssh --hostname=$MAC_NAME   # open the printed URL, approve"
 echo "  2. in the Tailscale admin console: disable key expiry, restrict SSH in the ACL"
 echo "  3. verify key login from the client, then disable password auth"

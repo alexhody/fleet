@@ -1,8 +1,9 @@
 # Fleet
 
 Machines that run agents for me, what each is for, and how work moves between
-them. Provisioning lives in `setup/<host-kind>/SKILL.md`; this file is the
-inventory and the conventions.
+them. This file is the inventory and the conventions. Provisioning lives in
+`setup/`: `linux-worker/` and `macos-worker/` set up any Ubuntu or macOS
+machine, and `saturn/` and `neptune/` add what's specific to each host.
 
 ## Hosts
 
@@ -19,23 +20,23 @@ Use full MagicDNS names.
 | Agents | Claude Code (under cmux), T3 Code, opencode |
 | Runtimes | node (fnm), bun, pnpm, uv |
 
-Builds Apple targets: iOS simulators, Xcode and a USB iPhone
-(the `argent` workflow) stay here.
+A USB iPhone (the `argent` physical-device workflow) only works here. Simulators
+and emulators also run on neptune.
 
 ### `saturn-mbp` — worker
 
 | | |
 | --- | --- |
 | Tailscale | `saturn-mbp.<tailnet>.ts.net` (`100.x.y.z`), SSH alias `saturn`, user `saturn` |
-| LAN | `<LAN IP>`, SSH alias `saturn-lan`, faster at home |
+| LAN | `saturn-mbp.local` (mDNS), when on the same network |
 | Hardware | MacBookPro11,5 (2015), i7-4870HQ 4c/8t, 16 GB |
 | OS | Ubuntu 24.04, kernel 7.0 |
 | Role | **long-running unattended work.** Always on. |
 | Agents | Claude Code, Codex, opencode |
 | Runtimes | node (fnm), uv, Docker (off until `dockeron`) |
 | Repos | `~/Code/` |
-| Setup / fixes | `setup/macbookpro-ubuntu-setup/` (`SKILL.md`, `TROUBLESHOOTING.md`) |
-| Health check | `ssh saturn bash -s < setup/macbookpro-ubuntu-setup/scripts/verify.sh` |
+| Setup / fixes | `setup/saturn/` on top of `setup/linux-worker/` (`SKILL.md`, `TROUBLESHOOTING.md`) |
+| Health check | `ssh saturn bash -s < setup/linux-worker/scripts/verify.sh`, then the same with `setup/saturn/scripts/verify.sh` |
 | T3 Code | `t3` service (systemd user unit, linger on), reached through T3 Connect |
 
 - Boots to a text console with the network up. `don` starts the desktop, `doff`
@@ -49,23 +50,33 @@ Builds Apple targets: iOS simulators, Xcode and a USB iPhone
 - `/tmp` is RAM and wiped on boot. Job files go in `~/jobs`.
 - Browser: Chrome (apt). There are no snaps and `snap install` is blocked.
 - A kernel hang reboots it within about 40 s. If it stays unreachable, suspect the
-  network: `ssh saturn-lan` skips Tailscale.
+  network: on the same LAN, `ssh saturn@saturn-mbp.local` skips Tailscale.
 
 ### `neptune-mbp` — work worker
 
 | | |
 | --- | --- |
 | Tailscale | `neptune-mbp.<tailnet>.ts.net` (`100.x.y.z`), SSH alias `neptune`, user `neptune` |
+| LAN | `neptune-mbp.local` (Bonjour), when on the same network |
 | Hardware | Apple M1 Max, 10 cores, 32 GB |
 | OS | macOS 27 |
 | Role | **work projects** |
-| Agents | Claude Code, Codex |
+| Agents | Claude Code, Codex, opencode, Argent MCP |
+| Runtimes | node (fnm), bun, pnpm, Xcode + iOS simulators, Android SDK + AVD `Pixel_10`, JDK 17 |
+| Repos | `~/Code/` |
+| Git | commits as `<work email>` (saturn uses `<personal email>`) |
+| Setup / fixes | `setup/neptune/` on top of `setup/macos-worker/` (`SKILL.md`, `TROUBLESHOOTING.md`) |
+| Health check | `ssh neptune bash -s < setup/macos-worker/scripts/verify.sh` |
 | T3 Code | `t3` service (launchd, `com.t3tools.t3code.service`), reached through T3 Connect |
+| GUI | Screen Sharing (`vnc://neptune-mbp.<tailnet>.ts.net`), self-hosted RustDesk |
 
 - SSH is Tailscale SSH in check mode: no keys, but a login can print a
   `login.tailscale.com` link to approve in the browser first.
 - It's a Mac, so unattended work needs it logged in, plugged in and awake. On AC
-  it never sleeps (`pmset` `sleep 0`).
+  it never sleeps (`pmset` `sleep 0`), and it logs itself in after a reboot.
+- `sudo` asks for a password, so anything needing it runs from neptune's T3
+  terminal. A restart without sudo:
+  `ssh neptune 'osascript -e "tell application \"System Events\" to restart"'`.
 
 ## What goes where
 
@@ -77,7 +88,10 @@ worker counts (`-j8` beats `-j4` there).
 scraping sweeps, I/O-bound integration suites and Docker services, anything that
 should keep running while jupiter is closed.
 
-**Jupiter:** simulators and Xcode, builds I'm waiting on, interactive UI work.
+**Neptune:** work projects, and mobile work that can run unattended: React
+Native, iOS and Android builds, simulator and emulator testing through Argent.
+
+**Jupiter:** builds I'm waiting on, interactive UI work, a USB iPhone.
 
 One serious job at a time on saturn: worktrees isolate files, not ports, Docker or
 databases.
@@ -85,7 +99,8 @@ databases.
 ## Connecting
 
 Saturn: key-only SSH over Tailscale or the LAN, plus T3 Connect for T3 Code.
-Neptune: Tailscale SSH, plus T3 Connect for T3 Code. Agents on saturn need their own
+Neptune: Tailscale SSH, key SSH on the LAN, plus T3 Connect for T3 Code.
+On a LAN, use `<name>.local`; no host's LAN IP is written down anywhere. Agents on each worker need their own
 logins (`claude auth login`, `codex login --device-auth`, `opencode auth login`;
 see the setup skill, step 5). Renew before long runs: a session that outlives its
 login stops. Never pass `--bare` on a subscription login, since it skips OAuth.
@@ -100,8 +115,7 @@ jupiter doesn't stop them.
   `relay.t3.codes`, so the connection doesn't depend on Tailscale. On jupiter,
   sign in to T3 Connect in Settings → Connections and pick the worker. Check it
   with `t3 service status` and `t3 connect status`.
-- To link a new worker, run `t3 connect link --headless` (it prints a device
-  code to approve at `accounts.t3.codes`), then `t3 service restart`.
+- To link a new worker, see step 6 of its setup skill.
 - T3 Connect is also the way back in when Tailscale is down. Its terminal still
   works, so `tailscale login` can run from there.
 - `t3 update` on a worker restarts its service and interrupts running turns.
@@ -158,9 +172,22 @@ It needs a full `claude auth login`, not a `setup-token`.
 
 ### Reaching services
 
-UFW allows everything on `tailscale0`, so a dev server on saturn is at
-`saturn-mbp.<tailnet>.ts.net:<port>` from jupiter. Anything on the tailnet can reach it too, so
-nothing unauthenticated.
+A dev server on a worker is at `<host>-mbp.<tailnet>.ts.net:<port>` from jupiter.
+On saturn, UFW allows everything on `tailscale0`. Anything on the tailnet can
+reach it too, so nothing unauthenticated. Neptune's RustDesk server listens on
+TCP 21115-21119 and UDP 21116.
+
+### Moving a worker to another tailnet
+
+1. Make sure T3 Connect works on it first. Its terminal doesn't depend on
+   Tailscale, so it stays up when the tailnet changes.
+2. In that terminal: `tailscale login --hostname=<host>-mbp --ssh`. If it aborts
+   with an SSH warning, run it without `--ssh`, then
+   `tailscale set --ssh --accept-risk=lose-ssh`. `login` has no `--accept-risk`.
+3. Approve the printed link as the target account, and disable key expiry for the
+   node in the admin console.
+4. On jupiter, point `~/.ssh/config` at the new MagicDNS name, and accept the new
+   host key on the first connection.
 
 ## Handoff
 
@@ -169,5 +196,5 @@ jupiter. No sshfs or shared filesystems.
 
 ## Deliberately not here
 
-No orchestrator, no Kubernetes, no shared filesystem. Two machines don't need more
-than T3 Code and `claude --bg`.
+No orchestrator, no Kubernetes, no shared filesystem. Three machines don't need
+more than T3 Code and `claude --bg`.

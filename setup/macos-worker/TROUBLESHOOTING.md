@@ -1,7 +1,8 @@
-# Troubleshooting and fallbacks — MacBook Pro macOS worker
+# Troubleshooting and fallbacks — macOS worker
 
-Each entry: what you see, why, and what to do. The commands assume `ssh neptune`
-unless an entry says you need the local keyboard or Screen Sharing.
+Each entry: what you see, why, and what to do. The commands assume `ssh <host>`
+unless an entry says you need the local keyboard or Screen Sharing. Machine
+extras (such as neptune's RustDesk server) are in the machine's folder.
 
 ## Unreachable after a reboot
 
@@ -24,8 +25,8 @@ Nobody is logged in to the GUI. Simulators, Xcode signing and the keychain need
 a window session.
 
 - Check: `defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser`
-  must print `neptune`.
-- Fix: `sudo sysadminctl -autologin set -userName neptune -password -`, or
+  must print the admin user.
+- Fix: `sudo sysadminctl -autologin set -userName <user> -password -`, or
   System Settings > Users & Groups > Automatically log in as.
 - Until the next reboot, log in once over Screen Sharing.
 
@@ -77,8 +78,8 @@ per connection, so the next login already uses the new config.
 
 ### Locked out after disabling password auth
 
-Use Tailscale SSH (`ssh neptune@neptune-mbp` over the tailnet does not use the
-authorized keys), or Screen Sharing, then fix `~/.ssh/authorized_keys` (mode
+Use Tailscale SSH (`ssh <user>@<name>` over the tailnet does not use the
+authorized keys), T3 Connect's terminal, or Screen Sharing, then fix `~/.ssh/authorized_keys` (mode
 600, `~/.ssh` mode 700).
 
 ### Tailscale SSH doesn't work or `tailscale up --ssh` is rejected
@@ -87,8 +88,8 @@ Only the open-source `tailscaled` build can be a Tailscale SSH server. The App
 Store and Standalone GUI apps are sandboxed or run as a network extension, and
 they only start after login.
 
-- Check: `ls /Applications/Tailscale.app` must fail, and `pgrep -x tailscaled`
-  must print a PID.
+- Check: `ls /Applications/Tailscale.app` must fail, and `ps -axco comm | grep -x tailscaled`
+  must print it (`pgrep` can't see root processes).
 - The old GUI's network extension shows as "waiting to uninstall on reboot" in
   `systemextensionsctl list` until the next reboot. That is harmless.
 - Restart the daemon: `sudo brew services restart tailscale`.
@@ -98,7 +99,7 @@ they only start after login.
 ### Tailscale logged out after months
 
 Node key expiry (180 days by default). Re-run
-`sudo tailscale up --ssh --hostname=neptune-mbp` over LAN SSH or Screen Sharing,
+`sudo tailscale up --ssh --hostname=<name>` over T3 Connect, LAN SSH or Screen Sharing,
 approve the URL, then disable key expiry for the node in the admin console.
 
 ### Screen Sharing is blurry or tiny
@@ -126,11 +127,11 @@ Android Studio bundles a JDK that is too new for React Native's Gradle. Use JDK
 `echo $JAVA_HOME; java -version`. In Android Studio, set Settings > Build Tools >
 Gradle > Gradle JDK to the same path.
 
-### `command not found` for node, claude, adb… over `ssh neptune cmd`
+### `command not found` for node, claude, adb… over `ssh <host> cmd`
 
 `ssh host cmd` runs a non-interactive zsh, which reads only `~/.zshenv`. The
 block marked `FLEET_PATH_SET` there must exist. Check with
-`ssh neptune 'echo $PATH; command -v node claude adb'`. In login shells,
+`ssh <host> 'echo $PATH; command -v node claude adb'`. In login shells,
 `/etc/zprofile` runs `path_helper`, which moves system paths first; `.zprofile`
 and `.zshrc` re-add Homebrew and fnm, so interactive shells are fine too.
 
@@ -163,6 +164,13 @@ devices: `xcrun simctl shutdown all`, `adb emu kill`.
 
 Spotlight should be off: `mdutil -s /` prints `Indexing disabled.`
 
+### Screen lock looks on in `sysadminctl`, but the screen never locks
+
+Over SSH, `sysadminctl -screenLock status` can report `immediate` while System
+Settings > Lock Screen says **Never** and the screen stays unlocked. The command
+doesn't see the desktop session's setting from a remote shell, so `verify.sh`
+doesn't check it. Trust System Settings.
+
 ## Battery
 
 The battery is always on the charger. Keep the macOS Charge Limit at 80%
@@ -178,10 +186,9 @@ If the case or trackpad starts to bulge, power it off and replace the battery.
 | No-sleep | `sudo pmset -c sleep 1 displaysleep 10 standby 1 powernap 1 hibernatemode 3` |
 | Automatic updates | `sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool true` (and `AutomaticDownload`) |
 | Auto-login | `sudo sysadminctl -autologin off` |
-| Screen lock | `sysadminctl -screenLock immediate -password -` |
+| Screen lock | `sysadminctl -screenLock immediate -password -` (or System Settings > Lock Screen) |
 | Spotlight | `sudo mdutil -a -i on` |
 | Open-file limit | `sudo launchctl bootout system/limit.maxfiles && sudo rm /Library/LaunchDaemons/limit.maxfiles.plist` |
 | SSH hardening | `sudo rm /etc/ssh/sshd_config.d/000-fleet-hardening.conf` |
 | Tailscale daemon | `sudo tailscale logout; sudo brew services stop tailscale; brew uninstall tailscale` |
 | Shell PATH | delete the `FLEET_PATH_SET` block from `~/.zshenv` |
-| RustDesk server | `for b in hbbs hbbr; do launchctl bootout gui/$(id -u)/com.rustdesk.$b; rm ~/Library/LaunchAgents/com.rustdesk.$b.plist /opt/homebrew/bin/$b; done; rm -rf /opt/homebrew/var/rustdesk-server /opt/homebrew/var/log/rustdesk-server ~/Library/Caches/rustdesk-server` (deletes the key: clients need the new one after a reinstall) |

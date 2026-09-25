@@ -14,7 +14,7 @@
 # over Tailscale and the LAN; the router does not forward them.
 #
 # Usage (on neptune, as neptune, safe to re-run):
-#   bash setup/macbookpro-macos-setup/scripts/rustdesk-server.sh
+#   bash ~/Code/fleet/setup/neptune/scripts/rustdesk-server.sh
 #
 # Options (env):
 #   RUSTDESK_VERSION  rustdesk-server release tag to build (default 1.1.16)

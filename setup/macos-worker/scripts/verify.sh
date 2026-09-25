@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh - check a provisioned macOS worker after reboot. Needs no root.
 #
-# From the client:  ssh neptune bash -s < scripts/verify.sh
+# From the client:  ssh <host> bash -s < setup/macos-worker/scripts/verify.sh
 # That shell is non-interactive, like the ones remote agents get, so the tool
 # checks at the end prove PATH works there. Exits non-zero if any check failed.
 
@@ -22,7 +22,6 @@ check ac-womp       1     "$(ac womp)"
 check battery-sleep 0     "$(bat sleep)"
 check filevault     "FileVault is Off." "$(fdesetup status | head -1)"
 check autologin     "$USER" "$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null)"
-check screenlock    off   "$(sysadminctl -screenLock status 2>&1 | grep -q 'screenLock is off' && echo off || echo on)"
 check auto-install  0     "$(defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates 2>/dev/null)"
 check auto-download 0     "$(defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload 2>/dev/null)"
 check on-ac         yes   "$(pmset -g batt | head -1 | grep -q 'AC Power' && echo yes || echo no)"
@@ -31,11 +30,12 @@ check on-ac         yes   "$(pmset -g batt | head -1 | grep -q 'AC Power' && ech
 check sshd          yes   "$(listening 22)"
 check ssh-hardening yes   "$(grep -qx 'PermitRootLogin no' /etc/ssh/sshd_config.d/000-fleet-hardening.conf 2>/dev/null && echo yes || echo no)"
 check screensharing yes   "$(listening 5900)"
-check tailscaled    yes   "$(pgrep -x tailscaled >/dev/null && echo yes || echo no)"
+# pgrep can't see root processes on macOS; ps can.
+check tailscaled    yes   "$(ps -axco comm | grep -qx tailscaled && echo yes || echo no)"
 check tailscale-ip  yes   "$(has ip "$(tailscale ip -4 2>/dev/null)")"
 check tailscale-gui absent "$([ -d /Applications/Tailscale.app ] && echo present || echo absent)"
 
-if [ -f "$HOME/Library/LaunchAgents/com.rustdesk.hbbs.plist" ]; then  # optional, see SKILL.md section 7
+if [ -f "$HOME/Library/LaunchAgents/com.rustdesk.hbbs.plist" ]; then  # optional, see setup/neptune/SKILL.md
   check rustdesk-hbbs yes "$(listening 21116)"
   check rustdesk-hbbr yes "$(listening 21117)"
 fi

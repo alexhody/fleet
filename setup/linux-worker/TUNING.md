@@ -1,8 +1,3 @@
----
-name: linux-worker-tuning
-description: Use when turning a laptop or PC (MacBook, ThinkPad, Dell, desktop) into an always-on, headless Linux worker for builds or coding agents, or when such a box idles at high power, throttles under sustained load, freezes, reboots, or logs disk errors. Also use before undervolting, capping power, or changing fans on one.
----
-
 # Tuning a Linux worker
 
 A laptop that runs 24/7 over SSH has three budgets, in this order: **reliability**
@@ -10,8 +5,9 @@ A laptop that runs 24/7 over SSH has three budgets, in this order: **reliability
 **sustained throughput**. Every tweak is a hypothesis. Most popular ones did nothing
 or made things worse when measured.
 
-Worked example with scripts: `setup/macbookpro-ubuntu-setup` (MacBookPro11,5).
-Commands for every measurement below: `MEASURE.md` in this folder.
+The generic parts are already in `scripts/setup.sh`. Worked example with machine
+scripts and measured results: `setup/saturn/` (MacBookPro11,5). Commands for
+every measurement below: `MEASURE.md` in this folder.
 
 ## The loop
 
@@ -28,7 +24,7 @@ Commands for every measurement below: `MEASURE.md` in this folder.
 ## Order of work
 
 1. **Can't lose the box.**
-   - Two SSH paths (Tailscale plus a LAN alias), key-only.
+   - Two SSH paths (Tailscale plus the LAN by mDNS name, `<name>.local`), key-only.
    - Never sleeps: mask `sleep.target`/`suspend.target`/`hibernate.target`, and set
      logind to ignore the lid.
    - Open or closed lid is a measured choice, not a default. An ignored lid can
@@ -55,7 +51,7 @@ Commands for every measurement below: `MEASURE.md` in this folder.
      `NVreg_DynamicPowerManagement=0x02`. For older NVIDIA (Pascal and before) and
      anything else, bind no driver and set the
      device's `power/control` to `auto`. Either way `power_state` must leave `D0`
-     and the package must reach PC6. A Mac uses the gmux (see the saturn skill);
+     and the package must reach PC6. A Mac uses the gmux (see `setup/saturn/`);
    - a controller whose driver keeps it powered (Thunderbolt: blacklist and
      runtime-suspend it);
    - internal USB devices that never autosuspend.
@@ -74,19 +70,6 @@ Commands for every measurement below: `MEASURE.md` in this folder.
 5. **Housekeeping, cheap and safe:** zram swap, `noatime`, tmpfs `/tmp`, raised
    inotify limits, BBR + `fq` (big win on Wi-Fi), remove snapd and unused services,
    boot to a text console, cap the battery charge and re-apply it at every boot.
-
-## What it did on saturn (i7-4870HQ, 2015)
-
-| Change | Result |
-| --- | --- |
-| dGPU off (gmux) | Idle 24 → 15 W at the wall |
-| Panel blanked, Thunderbolt off, USB autosuspend | Idle 13.3 → 6.1 W DC, PC2 → PC6 96 % |
-| SSD I/O capped at 1280 KiB | Host bus errors gone, NCQ kept |
-| `thermald` masked | Builds 18 % faster |
-| Repaste (11-year-old paste) | Builds 137 → 128–131 s, idle 43 → 34 °C |
-| Undervolt −65 mV | Full-load clock +5 %, one thread −1.8 W |
-| BBR + `fq` | Wi-Fi upload lag 160 → 100 ms |
-| RAPL cap 30–35 W | Builds 5–13 % slower (rejected) |
 
 ## Undervolting safely
 

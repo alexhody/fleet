@@ -1,6 +1,8 @@
-# Troubleshooting and fallbacks — MacBook Pro Ubuntu worker
+# Troubleshooting — saturn (MacBookPro11,5)
 
-Each entry: what you see, why, and what to do. The commands assume `ssh saturn`
+Hardware problems on saturn. Generic Linux worker problems (access, PATH,
+services, crash dumps, undoing the generic changes) are in
+`setup/linux-worker/TROUBLESHOOTING.md`. The commands assume `ssh saturn`
 unless an entry says you need the local keyboard.
 
 ## Disk
@@ -20,7 +22,7 @@ Check: `journalctl -k | grep -E 'ata1|FPDMA|host bus'`.
    `sudo grub-reboot noncq-fallback && sudo reboot`. The next boot goes back to
    the default entry by itself.
 3. If `noncq` fixes it, make it permanent and keep the cap through udev. Set the
-   cmdline to `quiet loglevel=3 libata.force=noncq intel_iommu=off` in `/etc/default/grub`,
+   cmdline to `quiet loglevel=3 libata.force=noncq intel_iommu=off consoleblank=60` in `/etc/default/grub`,
    then `update-grub`. The `60-apple-ssd-max-sectors.rules` rule still caps I/O at
    1280 KiB. Random I/O drops about 15× (150k → 10k read IOPS).
 
@@ -83,12 +85,6 @@ amdgpu didn't bind. Check `lspci -k -s 01:00.0` shows `Kernel driver in use: amd
 and that `/etc/modprobe.d/blacklist-amdgpu.conf` has `options amdgpu si_support=1`
 and `options radeon si_support=0`. Then run `sudo update-initramfs -u`.
 
-### Boot got slow
-
-Run `systemd-analyze` (normally about 11 s) and `systemd-analyze blame | head`.
-If `splash` crept back into the cmdline, remove it: `plymouth-quit-wait` holds
-boot until GDM takes over.
-
 ### Harmless log noise
 
 None of these reach the text console (`loglevel=3` plus `20-quiet-console.conf`). Read
@@ -102,7 +98,6 @@ them with `journalctl -b -k -p err`. To see them on screen again, delete that fi
 - brcmfmac `no clm_blob available … limited channels`: Ubuntu ships no channel file
   for this card; the firmware's built-in list is used and 5 GHz works.
 - brcmfmac `fail to get arp ip table err:-52`: the 2015 firmware lacks ARP offload.
-- `Dependency failed for sssd-*.socket`: SSSD is unconfigured. `setup.sh` masks it.
 
 ## Crashes and freezes
 
@@ -112,38 +107,18 @@ Before power-cycling it, check whether it is really down or just unreachable ove
 Tailscale:
 
 ```bash
-ping <LAN IP>
-ssh saturn@<LAN IP>        # LAN path, skips Tailscale
+ping saturn-mbp.local           # from a machine on the same LAN
+ssh saturn@saturn-mbp.local     # LAN path, skips Tailscale
 ```
 
 If either answers, saturn is fine and the problem is the network or the laptop's
 Tailscale. A real kernel hang now panics and reboots by itself within about 40 s,
 so a box that stays down for minutes is more likely off the network than frozen.
 
-### Saturn rebooted by itself
+### Saturn stopped booting after repeated crashes
 
-A kernel hang, oops or 5-minute I/O stall panicked it (`61-crash-reboot.conf`).
-Read the dump:
-
-```bash
-ls -t /var/lib/systemd/pstore/ | head -3
-sudo cat /var/lib/systemd/pstore/<newest>/*/dmesg.txt | grep -aE 'panic|BUG|RIP|Comm:|hung|lockup' | head
-```
-
-`pstore-efi-cleanup.service` then deletes the dump from NVRAM, and only once its
-copy is on disk. NVRAM also holds the Mac's boot settings, so it must not fill up.
-Check it with `ls /sys/firmware/efi/efivars | grep -c '^dump-'`, which should be 0.
-
-If the Mac ever stops booting after repeated crashes, NVRAM may be full. At the
-keyboard, hold `Option+Cmd+P+R` at power-on until the second chime.
-
-To stop the automatic reboots (for example, to read a panic on screen):
-`sudo rm /etc/sysctl.d/61-crash-reboot.conf && sudo sysctl kernel.panic=0 kernel.softlockup_panic=0 kernel.hardlockup_panic=0 kernel.hung_task_panic=0`.
-
-Test the whole chain (it crashes saturn on purpose):
-`sudo sh -c 'sync; echo c > /proc/sysrq-trigger'`. It should be back over SSH in
-about 40 s, with a new dump in `/var/lib/systemd/pstore/`. `verify.sh` is all `ok`
-except `undervolt`: the boot after a crash runs at stock voltage (next section).
+NVRAM may be full of crash dumps (`pstore-efi-cleanup.service` normally clears
+them). At the keyboard, hold `Option+Cmd+P+R` at power-on until the second chime.
 
 ### Crashes, failed builds or wrong results since the undervolt
 
@@ -151,66 +126,20 @@ The CPU runs 65 mV under stock (`undervolt.service`). -75 mV passed 2 hours of
 mprime with bit-identical builds, so -65 has a margin, but a chip can drift with age.
 
 - After any crash, the next boot stays at stock once (`journalctl -b -u undervolt`
-  says so, and `verify.sh` fails `undervolt`). The boot after that undervolts again.
+  says so, and `setup/saturn/scripts/verify.sh` fails `undervolt`). The boot after that undervolts again.
 - To test whether it's the cause, run at stock: `sudo undervolt 0` (until reboot),
   or `sudo systemctl disable undervolt` (stays off).
-- To back off for good, re-run setup with `UNDERVOLT_MV=-50`, or edit the value in
+- To back off for good, re-run `hardware.sh` with `UNDERVOLT_MV=-50`, or edit the value in
   `/etc/systemd/system/undervolt.service`, then `sudo systemctl daemon-reload` and reboot.
 
-## Access
-
-### Can't SSH in
-
-- `tailscale status` on the laptop. Is `saturn-mbp` online? If not, the box may be
-  off, or Tailscale needs a re-login (`sudo tailscale up` at the keyboard).
-- The LAN IP is DHCP and changes. Use the Tailscale IP or name.
-- Locked out by key-only auth: at the keyboard, change `PasswordAuthentication no`
-  to `yes` in `/etc/ssh/sshd_config.d/99-hardening.conf`, then
-  `sudo systemctl restart ssh`.
-- UFW: `sudo ufw status`. It must allow `tailscale0`, plus `LAN_CIDR` to port 22.
-- Back up `~/.ssh/id_ed25519` on the laptop. Losing it means going to the keyboard.
-
-### `command not found` for node/claude over SSH but fine interactively
-
-Ubuntu's `~/.bashrc` returns early for non-interactive shells. Anything below
-the `case $- in` guard is invisible to `ssh host cmd` and `bash -lc`, which are
-the shells T3 Code and delegated jobs use. The `FLEET_PATH_SET` block must sit
-above the guard. `setup.sh` inserts it, and a tool installer appending a PATH
-line lower down doesn't matter. Check all three shell kinds:
-
-```bash
-ssh saturn 'command -v node claude'             # non-interactive
-ssh saturn 'bash -lc "command -v node claude"'  # login (T3 Code)
-ssh saturn 'bash -lic "command -v node"'        # interactive: path in fnm_multishells
-```
-
-### Agent jobs stall or stop making progress
-
-- The login expired. Check with `claude auth status`, `codex login status` and
-  `opencode auth list`, then log in again (SKILL.md step 5).
-- A `claude -p` run without `--permission-mode auto --permission-prompts none`
-  sits on a prompt nobody answers.
-- Don't use `--bare` on a subscription login. It ignores OAuth.
-
-## Services and devices
-
-### Something expected is not running
+## Devices
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| containers gone after reboot | Docker is off at boot | `dockeron`, or re-run setup with `DOCKER_ON=1` |
-| need a snap app (e.g. Chromium) | snapd is removed and pinned out | `sudo rm /etc/apt/preferences.d/no-snapd && sudo apt install snapd` |
-| `saturn-mbp.local` doesn't resolve | avahi (mDNS) is masked | use the Tailscale name, or `sudo systemctl unmask --now avahi-daemon.socket avahi-daemon.service` |
-| no GUI at the panel | it boots to a text console | `don` |
-| panel is dark | the console blanks after 60 s idle | press a key |
 | Thunderbolt device not detected | the controller is powered down | undo below, then reboot |
-| `don`/`doff`/`dockeron`/`dockeroff` ask for a password | sudoers rule missing, or the functions differ from the rule (it matches exact commands) | `sudo -l` must list them (`/etc/sudoers.d/desktop-toggles`, `docker-toggles`); re-run setup |
-| `sudo` asks for a password | `zz-saturn-nopasswd` missing or invalid | `sudo visudo -cf /etc/sudoers.d/zz-saturn-nopasswd`; re-run setup |
-| files in `/tmp` vanished | tmpfs, wiped on boot | use `~/jobs` |
-| apt fails on `liberror-perl` | broken `noble/main` index | `sudo rm -rf /var/lib/apt/lists/* && sudo apt-get update` |
-| 5 GHz networks missing | regulatory domain is `00` | `iw reg get`; re-run setup with `COUNTRY=` |
+| Bluetooth, camera or SD reader missing | turned off by `hardware.sh` | undo below |
 
-### Undo individual changes
+### Undo the hardware changes
 
 ```bash
 # Bluetooth (the controller comes back on the next boot)
@@ -220,52 +149,20 @@ sudo systemctl enable --now bluetooth && sudo rfkill unblock bluetooth
 sudo rm /etc/modprobe.d/disable-camera.conf
 # Thunderbolt and USB autosuspend (reboot after)
 sudo rm /etc/modprobe.d/thunderbolt-off.conf /etc/udev/rules.d/71-idle-power.rules && sudo update-initramfs -u
-# Console blanking: remove consoleblank=60 from /etc/default/grub, then sudo update-grub
 # SD reader (the port may differ: lsusb | grep 05ac:8406)
 sudo rm /etc/udev/rules.d/70-cardreader-off.rules && echo 1 | sudo tee /sys/bus/usb/devices/2-4/authorized
-# CUPS, ModemManager, notifiers
-sudo systemctl enable --now cups.socket cups.service cups-browsed ModemManager motd-news.timer
-# Desktop extras (colour profiles, screen sharing, mDNS, light sensor, crash reports, syslog, GPU switching, firmware checks)
-sudo systemctl unmask colord gnome-remote-desktop avahi-daemon.socket avahi-daemon iio-sensor-proxy kerneloops rsyslog switcheroo-control fwupd-refresh.timer
-# Apport (Ubuntu crash reports)
-sudo apt install apport
-# Boot waiting for Wi-Fi
-sudo systemctl enable NetworkManager-wait-online.service
-# SSSD (only if you join a company/LDAP domain)
-sudo systemctl unmask sssd.service sssd-{nss,autofs,pac,pam,pam-priv,ssh,sudo}.socket
-# Passwordless sudo (don/doff/dockeron/dockeroff keep their narrow rules)
-sudo rm /etc/sudoers.d/zz-saturn-nopasswd
 # CPU undervolt (sudo undervolt prints the offset)
 sudo systemctl disable --now undervolt && sudo undervolt 0
 # Battery charge limit (sudo bclm prints the current one)
 sudo systemctl disable --now battery-limit && sudo bclm 100
-# Wi-Fi power-save back on (battery over latency)
-sudo rm /etc/NetworkManager/conf.d/99-wifi-powersave.conf; nmcli connection modify <name> wifi.powersave 3
-# zram
-sudo rm /etc/systemd/zram-generator.conf
-# tmpfs /tmp
-sudo systemctl disable tmp.mount && sudo rm /etc/systemd/system/tmp.mount
-# noatime: restore from /etc/fstab.bak; sysctls: remove /etc/sysctl.d/60-fleet-perf.conf
-# BBR only: delete its two lines from 60-fleet-perf.conf, then
-sudo sysctl -w net.ipv4.tcp_congestion_control=cubic net.core.default_qdisc=fq_codel
 ```
 
-Reboot after the zram, tmpfs, fstab or modprobe changes.
-
-### Boot straight to the desktop instead of the text console
-
-```bash
-sudo systemctl set-default graphical.target      # back: sudo systemctl set-default multi-user.target
-```
-
-GDM logs `saturn` in automatically either way (`/etc/gdm3/custom.conf`).
+Reboot after the modprobe changes.
 
 ## Known trade-offs
 
 - `intel_iommu=off` disables VT-d. That means no PCI passthrough and weaker DMA
   protection. It's needed because Apple's DMAR tables are unreliable.
-- CPU mitigations stay on. Agents run fetched code (npm postinstall, scraped
-  content).
 - Under sustained all-core load, the CPU hits 100 °C and throttles to 800 MHz,
   even with the fans at max. Keep the default 8 build workers anyway: `-j8` still
   beat `-j4` by about 2 % on a sustained build.
