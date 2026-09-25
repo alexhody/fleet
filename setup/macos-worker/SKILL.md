@@ -17,6 +17,27 @@ result. If something breaks later, or a step needs undoing, see
 The commands below use `U` for the admin user, `NAME` for the host name
 (`<user>-mbp`) and `H` for the SSH alias.
 
+## 0. Before you start
+
+Read `fleet.local.md` at the repo root (copy `fleet.local.example.md` if it is
+missing). Before running any command, ask the user in one go for whatever it
+lacks:
+
+- login user and host name (`<user>-mbp`), and whether it is a work or a
+  personal machine (that picks the git email)
+- the machine's current LAN IP, for the first connection
+- tailnet and Tailscale account, T3 Connect account, GitHub account, git name
+  and email
+- whether an Apple ID is signed in at the Mac for Xcode
+
+Offer to save new answers to `fleet.local.md`.
+
+Secrets never go into chat, files, commands or this repo. The user types them
+only at the machine's own prompts: the login and sudo password (setup reads it
+with `-password -`), the Apple ID at the Mac, and the browser approvals
+(Tailscale link, T3 device code, `claude`, `codex` and `gh` logins). Prefer those interactive logins over auth keys or tokens; if one is
+ever needed, the user pastes it at the prompt on the machine.
+
 ## 1. At the Mac (once)
 
 These need the local keyboard or an Apple ID. Everything else runs remotely.
@@ -82,7 +103,7 @@ What it sets up:
 
 ## 3. Tailscale and key-only SSH
 
-Join the personal tailnet (`<tailnet>.ts.net`) and approve as `<personal email>`:
+Join the tailnet from `fleet.local.md` and approve as its Tailscale account:
 
 ```bash
 ssh -t $U@$IP "sudo tailscale up --ssh --hostname=$NAME"   # open the printed URL, approve
@@ -134,8 +155,8 @@ ssh -t $H claude auth login            # open the URL here, paste the code back
 ssh -t $H codex login --device-auth
 ssh -t $H opencode auth login
 ssh -t $H gh auth login                # GitHub.com, HTTPS, yes to git credentials
-EMAIL=<work email>             # work machine; <personal email> for a personal one
-ssh $H "git config --global user.name '<git name>'; git config --global user.email $EMAIL"
+GIT_NAME='<git name>' GIT_EMAIL=<git email>   # fleet.local.md: work or personal email
+ssh $H "git config --global user.name '$GIT_NAME'; git config --global user.email $GIT_EMAIL"
 ssh $H 'claude auth status; codex login status; gh auth status'
 ```
 

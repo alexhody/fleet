@@ -7,14 +7,16 @@ machine, and `saturn/` and `neptune/` add what's specific to each host.
 
 ## Hosts
 
-Every host is on the personal tailnet, `<tailnet>.ts.net` (`<personal email>`).
+Every host is on the personal tailnet, `<tailnet>.ts.net`. The tailnet, account
+names, IPs and git identities are in `fleet.local.md`, which is private (copy
+`fleet.local.example.md` to create it).
 Use full MagicDNS names.
 
 ### `jupiter-mbp` — control plane
 
 | | |
 | --- | --- |
-| Tailscale | `jupiter-mbp.<tailnet>.ts.net` (`100.x.y.z`) |
+| Tailscale | `jupiter-mbp.<tailnet>.ts.net` |
 | Hardware | Apple M4 Max, 16 cores, 48 GB |
 | Role | **where I prompt from.** Interactive work, anything needing macOS |
 | Agents | Claude Code (under cmux), T3 Code, opencode |
@@ -27,7 +29,7 @@ and emulators also run on neptune.
 
 | | |
 | --- | --- |
-| Tailscale | `saturn-mbp.<tailnet>.ts.net` (`100.x.y.z`), SSH alias `saturn`, user `saturn` |
+| Tailscale | `saturn-mbp.<tailnet>.ts.net`, SSH alias `saturn`, user `saturn` |
 | LAN | `saturn-mbp.local` (mDNS), when on the same network |
 | Hardware | MacBookPro11,5 (2015), i7-4870HQ 4c/8t, 16 GB |
 | OS | Ubuntu 24.04, kernel 7.0 |
@@ -56,7 +58,7 @@ and emulators also run on neptune.
 
 | | |
 | --- | --- |
-| Tailscale | `neptune-mbp.<tailnet>.ts.net` (`100.x.y.z`), SSH alias `neptune`, user `neptune` |
+| Tailscale | `neptune-mbp.<tailnet>.ts.net`, SSH alias `neptune`, user `neptune` |
 | LAN | `neptune-mbp.local` (Bonjour), when on the same network |
 | Hardware | Apple M1 Max, 10 cores, 32 GB |
 | OS | macOS 27 |
@@ -64,7 +66,7 @@ and emulators also run on neptune.
 | Agents | Claude Code, Codex, opencode, Argent MCP |
 | Runtimes | node (fnm), bun, pnpm, Xcode + iOS simulators, Android SDK + AVD `Pixel_10`, JDK 17 |
 | Repos | `~/Code/` |
-| Git | commits as `<work email>` (saturn uses `<personal email>`) |
+| Git | commits with the work email (saturn uses the personal one) |
 | Setup / fixes | `setup/neptune/` on top of `setup/macos-worker/` (`SKILL.md`, `TROUBLESHOOTING.md`) |
 | Health check | `ssh neptune bash -s < setup/macos-worker/scripts/verify.sh` |
 | T3 Code | `t3` service (launchd, `com.t3tools.t3code.service`), reached through T3 Connect |
@@ -110,8 +112,7 @@ login stops. Never pass `--bare` on a subscription login, since it skips OAuth.
 Each worker runs its own T3 server, and agents live inside it, so closing
 jupiter doesn't stop them.
 
-- Both workers use T3 Connect, signed in as the personal account
-  (`<personal email>`). Each `t3` service opens a Cloudflare tunnel to
+- Both workers use T3 Connect, signed in as the personal account. Each `t3` service opens a Cloudflare tunnel to
   `relay.t3.codes`, so the connection doesn't depend on Tailscale. On jupiter,
   sign in to T3 Connect in Settings → Connections and pick the worker. Check it
   with `t3 service status` and `t3 connect status`.

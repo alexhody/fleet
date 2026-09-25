@@ -9,7 +9,7 @@ Target: MacBookPro18,2 (M1 Max, 10 cores, 32 GB), current macOS, user
 `neptune`, name `neptune-mbp`, on the personal tailnet. It lives in the server
 room, for work projects and unattended mobile work (see `FLEET.md`).
 
-Provisioning follows `setup/macos-worker/SKILL.md` with
+Provisioning follows `setup/macos-worker/SKILL.md` (step 0 first) with
 `U=neptune NAME=neptune-mbp H=neptune`. This file covers only what differs and
 the RustDesk server. Problems are in `setup/macos-worker/TROUBLESHOOTING.md`.
 
@@ -33,7 +33,7 @@ the RustDesk server. Problems are in `setup/macos-worker/TROUBLESHOOTING.md`.
   Tailscale SSH runs in check mode, so a login can print a `login.tailscale.com`
   link to approve first. On the same LAN, `ssh neptune@neptune-mbp.local` uses
   the key in `~/.ssh/authorized_keys` instead.
-- **Step 5:** git commits as `<work email>` (work).
+- **Step 5:** git commits with the work email from `fleet.local.md`.
 - `sudo` asks for a password, so anything that needs it runs from neptune's T3
   terminal. A restart without sudo:
   `ssh neptune 'osascript -e "tell application \"System Events\" to restart"'`.
@@ -85,7 +85,7 @@ Sharing (`open vnc://neptune-mbp.<tailnet>.ts.net`):
    password), so it runs after a reboot.
 4. Settings > Security > Unlock security settings > **Set permanent password**.
    Until then only the one-time password shown in its window works.
-5. Note the ID in its main window (`<rustdesk id>` on neptune-mbp now). Other
+5. Note the ID in its main window and record it in `fleet.local.md`. Other
    devices connect to that ID with the permanent password.
 
 When the app first registers, its log shows one `UUID_MISMATCH` and then

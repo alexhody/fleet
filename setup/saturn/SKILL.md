@@ -9,7 +9,8 @@ Target: MacBookPro11,5, Ubuntu 24.04 with the HWE kernel, user `saturn`, name
 `saturn-mbp`, on the personal tailnet. Always on, for long unattended work
 (see `FLEET.md`).
 
-Provisioning follows `setup/linux-worker/SKILL.md` with `U=saturn H=saturn`.
+Provisioning follows `setup/linux-worker/SKILL.md` (step 0 first) with
+`U=saturn H=saturn`.
 This file covers only what differs. Hardware problems are in
 `TROUBLESHOOTING.md` here; everything else is in
 `setup/linux-worker/TROUBLESHOOTING.md`.
@@ -68,7 +69,7 @@ ssh saturn bash -s < setup/linux-worker/scripts/verify.sh
 ssh saturn bash -s < setup/saturn/scripts/verify.sh
 ```
 
-Git commits as `<personal email>` (personal).
+Git commits with the personal email from `fleet.local.md`.
 
 ## Daily use
 
