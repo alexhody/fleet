@@ -26,6 +26,7 @@ T3 Code. It's also where fixes for each machine get recorded.
 ```
 FLEET.md                 inventory, conventions, how to hand work to a worker
 credentials.example.md   template for your private values
+scripts/move-session.sh  move a Claude Code session between machines
 setup/
   linux-worker/          any Ubuntu/Debian machine → worker, plus tuning and measuring
   macos-worker/          any Apple Silicon Mac → worker, incl. Xcode and Android

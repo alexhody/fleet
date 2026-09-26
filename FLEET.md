@@ -171,6 +171,26 @@ ssh saturn 'bash -lc "tmux new -d -s job1 \"~/jobs/job1.sh > ~/jobs/job1.log 2>&
 claude.ai/code or the phone app attaches to a session already running on saturn.
 It needs a full `claude auth login`, not a `setup-token`.
 
+### 5. Moving a session between machines
+
+A Claude Code session, including one started in T3 Code, can continue on
+another machine. On jupiter:
+
+```bash
+scripts/move-session.sh pull saturn [session-id]   # saturn → jupiter
+scripts/move-session.sh push saturn [session-id]   # jupiter → saturn
+```
+
+- Without an id it takes the most recently active session on the source.
+- It copies the transcript, maps the project folder by its path under `$HOME`
+  (`/home/saturn/Code/fleet` → `~/Code/fleet`, or `--cwd <dir>`), and prints
+  the `claude --resume` command. The folder must exist on the destination.
+- In T3 Code, the session shows up when that folder is added as a project in
+  the destination's environment and its recent sessions are imported.
+- Move it after the turn has finished, and stop using the source copy.
+  Otherwise the two copies go separate ways.
+- Jupiter pulls from the workers. Workers have no way into jupiter.
+
 ### Reaching services
 
 A dev server on a worker is at `<host>-mbp.<tailnet>.ts.net:<port>` from jupiter.
