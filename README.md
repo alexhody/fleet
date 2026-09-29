@@ -26,6 +26,8 @@ T3 Code. It's also where fixes for each machine get recorded.
 ```
 FLEET.md                 inventory, conventions, how to hand work to a worker
 credentials.example.md   template for your private values
+agents/AGENTS.md         instructions every agent reads, on every machine
+scripts/link-agents.sh   point Claude Code, Codex and opencode at them
 scripts/move-session.sh  move a Claude Code session between machines
 setup/
   linux-worker/          any Ubuntu/Debian machine → worker, plus tuning and measuring
@@ -40,14 +42,16 @@ result after a reboot).
 
 ## Using it
 
-1. Clone the repo on your control machine and create your private values file:
+1. Clone the repo to `~/Code/fleet` on your control machine, link the shared
+   agent instructions, and create your private values file:
 
    ```bash
+   scripts/link-agents.sh
    cp credentials.example.md credentials.md
    ```
 
-   It's gitignored. Fill in what you know (tailnet, accounts, git identity),
-   or leave it and the agent will ask.
+   `credentials.md` is gitignored. Fill in what you know (tailnet, accounts, git
+   identity), or leave it and the agent will ask.
 
 2. Ask your agent to follow the skill for the new machine, for example:
 

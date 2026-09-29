@@ -95,8 +95,8 @@ Native, iOS and Android builds, simulator and emulator testing through Argent.
 
 **Jupiter:** builds I'm waiting on, interactive UI work, a USB iPhone.
 
-One serious job at a time on saturn: worktrees isolate files, not ports, Docker or
-databases.
+Several jobs can run at once. Worktrees isolate files, not ports, Docker or
+databases, so each job picks a free port and its own names for those.
 
 ## Connecting
 

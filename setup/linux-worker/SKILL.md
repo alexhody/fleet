@@ -140,6 +140,13 @@ ssh $H "git config --global user.name '$GIT_NAME'; git config --global user.emai
 ssh $H 'claude auth status; codex login status; gh auth status'
 ```
 
+Then give every agent the shared instructions (`agents/AGENTS.md`):
+
+```bash
+ssh $H '[ -d ~/Code/fleet ] || git clone https://github.com/<github user>/fleet ~/Code/fleet'
+ssh $H '~/Code/fleet/scripts/link-agents.sh'
+```
+
 Optional on Ubuntu: `sudo pro attach <TOKEN> && sudo pro enable esm-apps esm-infra livepatch`.
 
 ## 6. T3 Code service and T3 Connect
